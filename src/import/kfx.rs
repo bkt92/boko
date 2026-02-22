@@ -884,6 +884,26 @@ impl KfxImporter {
             return Ok(());
         }
 
+        // Build a lookup from resolved bcRawMedia entity names to their binary payload locations.
+        let mut raw_media_by_name: HashMap<String, EntityLoc> = HashMap::new();
+        for raw_loc in self
+            .entities
+            .iter()
+            .filter(|e| e.type_id == KfxSymbol::Bcrawmedia as u32)
+            .copied()
+        {
+            if let Some(name) =
+                container::resolve_symbol(raw_loc.id as u64, self.doc_symbols.as_ref())
+            {
+                raw_media_by_name.insert(name.to_string(), raw_loc);
+                if let Some(rest) = name.strip_prefix("resource/") {
+                    raw_media_by_name.insert(rest.to_string(), raw_loc);
+                } else {
+                    raw_media_by_name.insert(format!("resource/{name}"), raw_loc);
+                }
+            }
+        }
+
         // Collect entities to process to avoid borrow conflicts
         let locs: Vec<_> = self
             .entities
@@ -906,16 +926,25 @@ impl KfxImporter {
                     .and_then(|v| container::get_symbol_text(v, self.doc_symbols.as_ref()))
                     .map(|s| s.to_string());
 
+                let resolved_loc = location
+                    .as_ref()
+                    .and_then(|key| raw_media_by_name.get(key).copied())
+                    .or_else(|| {
+                        name.as_ref()
+                            .and_then(|key| raw_media_by_name.get(key).copied())
+                    })
+                    .unwrap_or(loc);
+
                 if let Some(loc_str) = &location
                     && !loc_str.is_empty()
                 {
-                    self.resources.insert(loc_str.clone(), loc);
+                    self.resources.insert(loc_str.clone(), resolved_loc);
                 }
                 if let Some(name_str) = &name
                     && !name_str.is_empty()
                     && Some(name_str) != location.as_ref()
                 {
-                    self.resources.insert(name_str.clone(), loc);
+                    self.resources.insert(name_str.clone(), resolved_loc);
                 }
             }
         }
