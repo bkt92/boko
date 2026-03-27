@@ -34,15 +34,54 @@ pub use transform::user_agent_stylesheet;
 pub use crate::style::{Declaration, Origin, Specificity, Stylesheet};
 
 use html5ever::driver::ParseOpts;
-use html5ever::parse_document;
 use html5ever::tendril::TendrilSink;
 
 use crate::model::Chapter;
 use tree_sink::ArenaSink;
 
+/// Check if content looks like XHTML/XML based on the first ~500 bytes.
+///
+/// Checks for XML declaration (`<?xml`) or XHTML namespace (`xmlns=`).
+fn looks_like_xhtml(html: &str) -> bool {
+    let prefix = &html[..html.len().min(500)];
+    prefix.contains("<?xml") || prefix.contains("xmlns=")
+}
+
+/// Parse HTML/XHTML into an ArenaDom.
+///
+/// Uses xml5ever for XHTML content (detected by `<?xml` or `xmlns=` in the
+/// first 500 bytes), falling back to html5ever for plain HTML. This correctly
+/// handles self-closing tags like `<script/>` which are valid in XHTML but
+/// cause content loss with HTML5 parsing.
+fn parse_dom(html: &str) -> ArenaDom {
+    if looks_like_xhtml(html) {
+        let sink = ArenaSink::new();
+        let result = xml5ever::driver::parse_document(sink, xml5ever::driver::XmlParseOpts::default())
+            .from_utf8()
+            .one(html.as_bytes());
+        let dom = result.into_dom();
+
+        // Verify xml5ever produced a usable tree (has a body with children).
+        // Fall through to html5ever if not.
+        if let Some(body) = dom.find_by_tag("body") {
+            if dom.children(body).next().is_some() {
+                return dom;
+            }
+        }
+    }
+
+    // Fallback: html5ever (permissive HTML5 parser)
+    let sink = ArenaSink::new();
+    let result = html5ever::parse_document(sink, ParseOpts::default())
+        .from_utf8()
+        .one(html.as_bytes());
+    result.into_dom()
+}
+
 /// Compile HTML content to IR.
 ///
 /// This is the main entry point for the compiler pipeline.
+/// Automatically detects XHTML and uses the appropriate parser.
 ///
 /// # Arguments
 ///
@@ -65,12 +104,7 @@ use tree_sink::ArenaSink;
 /// let chapter = compile_html(html, &[(author, Origin::Author)]);
 /// ```
 pub fn compile_html(html: &str, author_stylesheets: &[(Stylesheet, Origin)]) -> Chapter {
-    // Parse HTML to ArenaDom
-    let sink = ArenaSink::new();
-    let result = parse_document(sink, ParseOpts::default())
-        .from_utf8()
-        .one(html.as_bytes());
-    let dom = result.into_dom();
+    let dom = parse_dom(html);
 
     // Build complete stylesheet list with UA defaults
     let ua = transform::user_agent_stylesheet();
@@ -108,11 +142,7 @@ pub fn compile_html_bytes(html: &[u8], author_stylesheets: &[(Stylesheet, Origin
 /// Returns a list of (href, media) tuples for linked stylesheets,
 /// and a list of inline CSS content.
 pub fn extract_stylesheets(html: &str) -> (Vec<String>, Vec<String>) {
-    let sink = ArenaSink::new();
-    let result = parse_document(sink, ParseOpts::default())
-        .from_utf8()
-        .one(html.as_bytes());
-    let dom = result.into_dom();
+    let dom = parse_dom(html);
 
     let mut linked = Vec::new();
     let mut inline = Vec::new();
@@ -472,5 +502,76 @@ mod tests {
             }
         }
         assert!(found_break, "Break node lost during optimization");
+    }
+
+    #[test]
+    fn test_xhtml_self_closing_script_preserves_content() {
+        // EPUB XHTML files often have self-closing <script/> tags.
+        // In HTML5 parsing, <script/> swallows everything after it.
+        // xml5ever handles this correctly.
+        let html = r#"<html xmlns="http://www.w3.org/1999/xhtml">
+            <head>
+                <script src="book.js"/>
+            </head>
+            <body><p>Hello World</p></body>
+        </html>"#;
+        let chapter = compile_html(html, &[]);
+
+        let mut found_text = false;
+        for id in chapter.iter_dfs() {
+            let node = chapter.node(id).unwrap();
+            if node.role == Role::Text && !node.text.is_empty() {
+                let text = chapter.text(node.text);
+                if text.contains("Hello World") {
+                    found_text = true;
+                }
+            }
+        }
+        assert!(found_text, "Self-closing <script/> in XHTML swallowed body content");
+    }
+
+    #[test]
+    fn test_looks_like_xhtml() {
+        assert!(looks_like_xhtml(r#"<?xml version="1.0"?><html><body>Hi</body></html>"#));
+        assert!(looks_like_xhtml(r#"<html xmlns="http://www.w3.org/1999/xhtml"><body>Hi</body></html>"#));
+        assert!(!looks_like_xhtml("<html><body><p>Plain HTML</p></body></html>"));
+    }
+
+    #[test]
+    fn test_plain_html_still_works() {
+        // Plain HTML without xmlns should use html5ever and still work fine
+        let html = "<html><body><p>Plain HTML</p></body></html>";
+        let chapter = compile_html(html, &[]);
+
+        let mut found_text = false;
+        for id in chapter.iter_dfs() {
+            let node = chapter.node(id).unwrap();
+            if node.role == Role::Text && !node.text.is_empty() {
+                let text = chapter.text(node.text);
+                if text.contains("Plain HTML") {
+                    found_text = true;
+                }
+            }
+        }
+        assert!(found_text, "Plain HTML content should be preserved");
+    }
+
+    #[test]
+    fn test_xhtml_extract_stylesheets() {
+        // Stylesheet extraction should also work with XHTML
+        let html = r#"<html xmlns="http://www.w3.org/1999/xhtml">
+            <head>
+                <link rel="stylesheet" href="style.css"/>
+                <script src="book.js"/>
+                <style>p { color: red; }</style>
+            </head>
+            <body><p>Content</p></body>
+        </html>"#;
+
+        let (linked, inline) = extract_stylesheets(html);
+        assert_eq!(linked.len(), 1);
+        assert!(linked.contains(&"style.css".to_string()));
+        assert_eq!(inline.len(), 1);
+        assert!(inline[0].contains("color: red"));
     }
 }
