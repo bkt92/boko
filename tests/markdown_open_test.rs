@@ -64,3 +64,24 @@ fn test_load_chapter_paragraphs() {
     assert!(found_heading, "Should find at least one heading node");
     assert!(found_paragraph, "Should find at least one paragraph node");
 }
+
+#[test]
+fn test_image_extraction() {
+    use boko::Book;
+    use std::path::Path;
+
+    let path = Path::new("tests/fixtures/markdown/with_images.md");
+    if !path.exists() {
+        eprintln!("Skipping: fixture not found");
+        return;
+    }
+
+    let mut book = Book::open(path).unwrap();
+
+    // Need to load chapter to trigger parsing
+    let _chapter = book.load_chapter(boko::import::ChapterId(0));
+
+    let assets = book.list_assets();
+    eprintln!("Assets: {:?}", assets);
+    assert!(!assets.is_empty(), "Should extract images");
+}

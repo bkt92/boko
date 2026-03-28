@@ -282,12 +282,7 @@ impl MarkdownImporter {
                 let inline_id = builder.push_node(Role::Inline);
                 builder.chapter.node_mut(inline_id).unwrap().style = style_id;
             }
-            Tag::Link { .. } => {
-                builder.push_node(Role::Link);
-            }
-            Tag::Image { .. } => {
-                builder.push_node(Role::Image);
-            }
+            // Link and Image are handled directly in event loop
             _ => {} // Ignore other tags
         }
     }
@@ -305,13 +300,15 @@ impl MarkdownImporter {
             | TagEnd::Table
             | TagEnd::TableHead
             | TagEnd::TableRow
-            | TagEnd::TableCell
-            | TagEnd::Link
-            | TagEnd::Image => {
+            | TagEnd::TableCell => {
                 builder.pop_node();
             }
             TagEnd::Emphasis | TagEnd::Strong => {
                 // Already handled in start_tag
+            }
+            TagEnd::Link | TagEnd::Image => {
+                // Handled directly in event loop
+                builder.pop_node();
             }
             _ => {}
         }
@@ -384,13 +381,23 @@ impl Importer for MarkdownImporter {
     }
 
     fn list_assets(&self) -> &[PathBuf] {
-        // TODO: Return asset paths
-        &[]
+        &self.asset_paths
     }
 
-    fn load_asset(&mut self, _path: &Path) -> io::Result<Vec<u8>> {
-        // TODO: Load assets
-        Err(io::Error::new(io::ErrorKind::NotFound, "Asset loading not implemented"))
+    fn load_asset(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        // Try to get from cache
+        let key = path.to_string_lossy().to_string();
+        if let Some(bytes) = self.assets.get(&key) {
+            return Ok(bytes.clone());
+        }
+
+        // Try to load from disk
+        std::fs::read(path).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Failed to load asset {}: {}", key, e),
+            )
+        })
     }
 
     fn font_faces(&mut self) -> Vec<crate::model::FontFace> {
@@ -427,7 +434,39 @@ impl Importer for MarkdownImporter {
 
         for event in parser {
             match event {
-                Event::Start(tag) => self.handle_start_tag(&mut builder, tag),
+                Event::Start(tag) => {
+                    // Handle Link and Image directly to access &mut self for asset tracking
+                    match &tag {
+                        pulldown_cmark::Tag::Link { dest_url, .. } => {
+                            let url = dest_url.to_string();
+                            let node_id = builder.push_node(Role::Link);
+                            builder.chapter.semantics.set_href(node_id, &url);
+                        }
+                        pulldown_cmark::Tag::Image { dest_url, .. } => {
+                            let url = dest_url.to_string();
+                            let node_id = builder.push_node(Role::Image);
+                            builder.chapter.semantics.set_src(node_id, &url);
+
+                            // Track asset if not external
+                            if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("data:") {
+                                let base_dir = self.path.parent().unwrap_or(Path::new("."));
+                                let full_path = base_dir.join(&url);
+                                if !self.asset_paths.contains(&full_path) {
+                                    self.asset_paths.push(full_path.clone());
+
+                                    // Try to load asset
+                                    if let Ok(bytes) = std::fs::read(&full_path) {
+                                        self.assets.insert(url, bytes);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            // Handle other tags through handle_start_tag
+                            self.handle_start_tag(&mut builder, tag);
+                        }
+                    }
+                }
                 Event::End(tag) => self.handle_end_tag(&mut builder, tag),
                 Event::Text(text) => {
                     builder.text_buffer.push_str(&text);
