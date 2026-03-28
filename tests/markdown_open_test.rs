@@ -85,3 +85,20 @@ fn test_image_extraction() {
     eprintln!("Assets: {:?}", assets);
     assert!(!assets.is_empty(), "Should extract images");
 }
+
+#[test]
+fn test_toc_generation() {
+    use boko::Book;
+    use std::path::Path;
+
+    let path = Path::new("tests/fixtures/markdown/simple.md");
+    if !path.exists() {
+        eprintln!("Skipping: fixture not found");
+        return;
+    }
+
+    let book = Book::open(path).unwrap();
+    let toc = book.toc();
+    eprintln!("TOC: {:?}", toc);
+    assert!(!toc.is_empty(), "Should have TOC entries");
+}

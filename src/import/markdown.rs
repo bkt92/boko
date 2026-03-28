@@ -155,29 +155,116 @@ impl MarkdownImporter {
         // If no headings, create single chapter
         let mut found_heading = false;
 
+        // TOC building state
+        let mut toc_stack: Vec<(usize, Vec<usize>)> = Vec::new(); // (level, path to entry)
+        let mut in_heading = false;
+        let mut current_heading_text = String::new();
+        let mut current_heading_level = 0;
+
         for (event, range) in parser.into_offset_iter() {
-            if let Event::Start(Tag::Heading { level: HeadingLevel::H1, .. }) = event {
-                found_heading = true;
-                // Save previous chapter range
-                if chapter_index > 0 {
-                    let prev_end = range.start;
-                    self.chapter_ranges.last_mut().unwrap().end = prev_end;
+            match event {
+                Event::Start(Tag::Heading { level, .. }) => {
+                    in_heading = true;
+                    current_heading_text.clear();
+                    current_heading_level = level as usize;
+
+                    // Chapter splitting on H1
+                    if level == HeadingLevel::H1 {
+                        found_heading = true;
+                        // Save previous chapter range
+                        if chapter_index > 0 {
+                            let prev_end = range.start;
+                            self.chapter_ranges.last_mut().unwrap().end = prev_end;
+                        }
+
+                        // Start new chapter
+                        self.chapter_ranges.push(ChapterRange {
+                            start: range.start,
+                            end: self.content.len(),
+                            virtual_path: format!("chapter-{}.md", chapter_index + 1),
+                        });
+
+                        // Create spine entry
+                        self.spine.push(SpineEntry {
+                            id: ChapterId(chapter_index),
+                            size_estimate: 0,
+                        });
+
+                        chapter_index += 1;
+                    }
+
+                    // TOC building - pop stack to appropriate parent level
+                    while let Some(&(l, _)) = toc_stack.last() {
+                        if l < current_heading_level {
+                            break;
+                        }
+                        toc_stack.pop();
+                    }
+
+                    // Create TOC entry with placeholder title
+                    let entry = TocEntry {
+                        title: String::new(), // Will fill below
+                        href: String::new(),  // Will fill below
+                        children: Vec::new(),
+                        play_order: Some(self.toc.len()),
+                        target: None,
+                    };
+
+                    // Build path to this entry
+                    let mut entry_path = Vec::new();
+                    if let Some((_, parent_path)) = toc_stack.last() {
+                        // Copy parent path and add child index
+                        entry_path = parent_path.clone();
+                        let parent = get_toc_entry_at_path(&mut self.toc, &entry_path);
+                        if let Some(parent) = parent {
+                            entry_path.push(parent.children.len());
+                            parent.children.push(entry);
+                        }
+                    } else {
+                        // Top-level entry
+                        entry_path.push(self.toc.len());
+                        self.toc.push(entry);
+                    }
+
+                    toc_stack.push((current_heading_level, entry_path));
                 }
+                Event::Text(text) if in_heading => {
+                    current_heading_text.push_str(&text);
+                }
+                Event::End(pulldown_cmark::TagEnd::Heading(_)) => {
+                    in_heading = false;
+                    // Fill in the title for the last TOC entry
+                    if let Some((_, entry_path)) = toc_stack.last() {
+                        let slug = slugify(&current_heading_text);
+                        let chapter_num = if chapter_index > 0 { chapter_index - 1 } else { 0 };
+                        let href = format!("chapter-{}.md#{}", chapter_num + 1, slug);
 
-                // Start new chapter
-                self.chapter_ranges.push(ChapterRange {
-                    start: range.start,
-                    end: self.content.len(),
-                    virtual_path: format!("chapter-{}.md", chapter_index + 1),
-                });
-
-                // Create spine entry
-                self.spine.push(SpineEntry {
-                    id: ChapterId(chapter_index),
-                    size_estimate: 0,
-                });
-
-                chapter_index += 1;
+                        // Update entry at path
+                        if let Some(&index) = entry_path.first() {
+                            if let Some(entry) = self.toc.get_mut(index) {
+                                if entry_path.len() == 1 {
+                                    // Top-level entry
+                                    entry.title = current_heading_text.clone();
+                                    entry.href = href;
+                                } else {
+                                    // Nested entry - traverse children
+                                    let mut current_entry = entry;
+                                    for &child_index in &entry_path[1..] {
+                                        if let Some(child) = current_entry.children.get_mut(child_index) {
+                                            current_entry = child;
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    current_entry.title = current_heading_text.clone();
+                                    current_entry.href = href;
+                                }
+                            }
+                        }
+                    }
+                    current_heading_text.clear();
+                }
+                _ => {}
             }
         }
 
@@ -322,6 +409,43 @@ fn file_stem(path: &Path) -> String {
         .to_string()
 }
 
+fn slugify(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+// Helper to get mutable reference to TOC entry at a given path
+// Helper function to extract all text from a node and its descendants
+fn extract_node_text(chapter: &Chapter, node_id: NodeId) -> String {
+    let mut text = String::new();
+    let mut stack = vec![node_id];
+
+    while let Some(current_id) = stack.pop() {
+        if let Some(node) = chapter.node(current_id) {
+            // Push children in reverse order for left-to-right traversal
+            chapter.children(current_id)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .for_each(|child_id| stack.push(child_id));
+
+            // Collect text from Text nodes
+            if matches!(node.role, Role::Text) {
+                let node_text = chapter.text(node.text);
+                text.push_str(node_text);
+            }
+        }
+    }
+
+    text
+}
+
 impl Importer for MarkdownImporter {
     fn open(path: &Path) -> io::Result<Self>
     where
@@ -404,8 +528,29 @@ impl Importer for MarkdownImporter {
         Vec::new()
     }
 
-    fn index_anchors(&mut self, _chapters: &[(ChapterId, std::sync::Arc<crate::model::Chapter>)]) {
-        // TODO: Build anchor map
+    fn index_anchors(&mut self, chapters: &[(ChapterId, std::sync::Arc<crate::model::Chapter>)]) {
+        self.anchor_map.clear();
+
+        for (chapter_id, chapter) in chapters {
+            let virtual_path = match self.source_id(*chapter_id) {
+                Some(p) => p.to_string(),
+                None => continue,
+            };
+
+            // Find all heading nodes
+            for node_id in chapter.iter_dfs() {
+                if let Some(node) = chapter.node(node_id) {
+                    if matches!(node.role, Role::Heading(_)) {
+                        // Extract text from heading's descendants using helper function
+                        let text = extract_node_text(chapter, node_id);
+                        let slug = slugify(&text);
+                        let key = format!("{}#{}", virtual_path, slug);
+                        self.anchor_map
+                            .insert(key, GlobalNodeId::new(*chapter_id, node_id));
+                    }
+                }
+            }
+        }
     }
 
     fn resolve_href(&self, _from_chapter: ChapterId, href: &str) -> Option<AnchorTarget> {
