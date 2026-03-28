@@ -81,7 +81,6 @@ pub struct MarkdownImporter {
     chapter_ranges: Vec<ChapterRange>,
     anchor_map: HashMap<String, GlobalNodeId>,
     asset_paths: Vec<PathBuf>,
-    heading_nodes: Vec<(usize, String)>,
     config: MarkdownConfig,
 }
 
@@ -123,7 +122,6 @@ impl MarkdownImporter {
             chapter_ranges: Vec::new(),
             anchor_map: HashMap::new(),
             asset_paths: Vec::new(),
-            heading_nodes: Vec::new(),
             config: MarkdownConfig::default(),
         }
     }
@@ -1025,7 +1023,7 @@ impl MarkdownImporter {
 
         let parser = pulldown_cmark::Parser::new(&self.content);
         let mut chapter_index = 0;
-        let mut toc_stack: Vec<(usize, ChapterId)> = Vec::new(); // (level, entry_index)
+        let mut toc_stack: Vec<(usize, usize)> = Vec::new(); // (level, entry_index)
 
         // ... existing chapter splitting logic ...
 
@@ -1070,11 +1068,9 @@ impl MarkdownImporter {
 }
 ```
 
-- [ ] **Step 3: Store heading node IDs during scanning**
+- [ ] **Step 3: Store heading titles during scanning**
 
-Note: `heading_nodes` field is already in `MarkdownImporter` struct from Task 1, Step 4.
-
-Update `scan_headings()` to store heading titles:
+Update `scan_headings()` to capture heading text and store in TOC entries:
 
 ```rust
 impl MarkdownImporter {
@@ -1123,7 +1119,6 @@ impl MarkdownImporter {
 
                     self.toc.push(entry);
                     toc_stack.push((level, entry_index));
-                    self.heading_nodes.push((entry_index, String::new()));
 
                     last_level = level;
                 }
@@ -1132,10 +1127,9 @@ impl MarkdownImporter {
                 }
                 Event::End(Tag::Heading { .. }) => {
                     in_heading = false;
-                    // Fill in the title
-                    if let Some(entry) = self.heading_nodes.last_mut() {
-                        entry.1 = current_heading_text.clone();
-                        self.toc[entry.0].title = current_heading_text.clone();
+                    // Fill in the title for the last TOC entry
+                    if let Some(entry) = self.toc.last_mut() {
+                        entry.title = current_heading_text.clone();
                     }
                     current_heading_text.clear();
                 }
@@ -1162,17 +1156,8 @@ fn index_anchors(&mut self, chapters: &[(ChapterId, Arc<Chapter>)]) {
         for node_id in chapter.iter_dfs() {
             if let Some(node) = chapter.node(node_id) {
                 if matches!(node.role, Role::Heading(_)) {
-                    // Extract text from all Text node descendants
-                    let text = chapter
-                        .iter_dfs(node_id)
-                        .filter_map(|id| chapter.node(id))
-                        .filter(|n| matches!(n.role, Role::Text))
-                        .filter_map(|n| {
-                            let range = n.text;
-                            chapter.text.get(range.start as usize..(range.start + range.len) as usize)
-                        })
-                        .collect::<String>();
-
+                    // Extract text from heading's descendants using helper function
+                    let text = extract_node_text(chapter, node_id);
                     let slug = slugify(&text);
                     let key = format!("{}#{}", virtual_path, slug);
                     self.anchor_map
@@ -1181,6 +1166,32 @@ fn index_anchors(&mut self, chapters: &[(ChapterId, Arc<Chapter>)]) {
             }
         }
     }
+}
+
+// Helper function to extract all text from a node and its descendants
+fn extract_node_text(chapter: &Chapter, node_id: NodeId) -> String {
+    let mut text = String::new();
+    let mut stack = vec![node_id];
+
+    while let Some(current_id) = stack.pop() {
+        if let Some(node) = chapter.node(current_id) {
+            // Push children in reverse order for left-to-right traversal
+            chapter.children(current_id)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .for_each(|child_id| stack.push(child_id));
+
+            // Collect text from Text nodes
+            if matches!(node.role, Role::Text) {
+                if let Some(node_text) = chapter.text(node.text) {
+                    text.push_str(node_text);
+                }
+            }
+        }
+    }
+
+    text
 }
 
 fn slugify(text: &str) -> String {
@@ -1194,6 +1205,8 @@ fn slugify(text: &str) -> String {
         .join("-")
 }
 ```
+
+Note: Add `extract_node_text()` and `slugify()` as module-level functions after the `impl MarkdownImporter` block (similar to how `file_stem()` is a module function).
 
 - [ ] **Step 5: Run tests**
 
@@ -1215,6 +1228,8 @@ git commit -m "feat(markdown): implement TOC generation and anchor indexing"
 - Create: `tests/markdown_epub_export_test.rs`
 
 - [ ] **Step 1: Write integration test**
+
+Note: The `zip` crate should already be in `[dev-dependencies]` in `Cargo.toml` for existing EPUB tests. Verify this if needed.
 
 Create `tests/markdown_epub_export_test.rs`:
 
