@@ -3,8 +3,10 @@
 use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::import::{ChapterId, Importer, SpineEntry};
+use crate::io::ByteSource;
 use crate::model::{
     AnchorTarget, GlobalNodeId, Landmark, Metadata, TocEntry,
 };
@@ -72,6 +74,20 @@ impl MarkdownImporter {
             asset_paths: Vec::new(),
             config: MarkdownConfig::default(),
         }
+    }
+
+    /// Create a MarkdownImporter from in-memory bytes.
+    pub fn from_source(source: Arc<dyn ByteSource>) -> io::Result<Self> {
+        let len = source.len() as usize;
+        let data = source.read_at(0, len)?;
+        let content = String::from_utf8(data)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in Markdown"))?;
+
+        let mut importer = Self::new(PathBuf::from("memory.md"), content);
+        importer.scan_headings();
+        importer.build_metadata();
+
+        Ok(importer)
     }
 
     fn scan_headings(&mut self) {
