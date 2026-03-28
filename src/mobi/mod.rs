@@ -1,10 +1,10 @@
 //! MOBI/AZW3 format support.
 
 mod headers;
+pub mod html_filter;
 pub mod huffcdic;
 pub(crate) mod index;
 pub mod palmdoc;
-pub mod html_filter;
 pub mod parser;
 
 // Internal modules for AZW3 export

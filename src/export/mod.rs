@@ -36,6 +36,7 @@ mod css_gen;
 mod epub;
 mod html_synth;
 mod kfx;
+mod mobi;
 mod normalize;
 mod text;
 
@@ -47,6 +48,7 @@ pub use html_synth::{
     synthesize_xhtml_document, synthesize_xhtml_document_with_class_list,
 };
 pub use kfx::{KfxConfig, KfxExporter};
+pub use mobi::{MobiConfig, MobiEncoding, MobiExporter};
 pub use normalize::{ChapterContent, GlobalStylePool, NormalizedContent, normalize_book};
 pub use text::{MarkdownConfig, MarkdownExporter};
 

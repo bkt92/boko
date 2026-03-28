@@ -2,8 +2,8 @@
 //!
 //! Creates MOBI 6 (legacy Kindle format) files from Book structures.
 
-use std::io::{self, Seek, Write};
 use std::collections::HashMap;
+use std::io::{self, Seek, Write};
 
 use crate::model::{Book, Metadata, TocEntry};
 
@@ -183,9 +183,9 @@ impl MobiBuilder {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as u32;
-        header.extend_from_slice(&now.to_be_bytes());  // Creation
-        header.extend_from_slice(&now.to_be_bytes());  // Modification
-        header.extend_from_slice(&0u32.to_be_bytes());  // Last backup
+        header.extend_from_slice(&now.to_be_bytes()); // Creation
+        header.extend_from_slice(&now.to_be_bytes()); // Modification
+        header.extend_from_slice(&0u32.to_be_bytes()); // Last backup
 
         // Modification number (4 bytes)
         header.extend_from_slice(&0u32.to_be_bytes());
@@ -217,9 +217,7 @@ impl MobiBuilder {
 
     /// Sanitize title for PalmDB header (max 31 chars, null-terminated)
     fn sanitize_title(&self, title: &str) -> String {
-        let title: String = title.chars()
-            .take(31)
-            .collect();
+        let title: String = title.chars().take(31).collect();
         title
     }
 
@@ -233,10 +231,8 @@ impl MobiBuilder {
             let image_data = match book.load_asset(&image_path) {
                 Ok(data) => data,
                 Err(e) => {
-                    self.warnings.push(format!(
-                        "Failed to load image {:?}: {}",
-                        image_path, e
-                    ));
+                    self.warnings
+                        .push(format!("Failed to load image {:?}: {}", image_path, e));
                     continue; // Skip this image
                 }
             };
@@ -266,10 +262,8 @@ impl MobiBuilder {
                     }
                 }
                 Err(e) => {
-                    self.warnings.push(format!(
-                        "Failed to process image {:?}: {}",
-                        image_path, e
-                    ));
+                    self.warnings
+                        .push(format!("Failed to process image {:?}: {}", image_path, e));
                 }
             };
         }
@@ -404,8 +398,7 @@ impl MobiBuilder {
         // Update header length at stored offset
         let header_len = header.len() as u32;
         let len_bytes = header_len.to_be_bytes();
-        header[header_length_offset..header_length_offset + 4]
-            .copy_from_slice(&len_bytes);
+        header[header_length_offset..header_length_offset + 4].copy_from_slice(&len_bytes);
 
         // Add title after header
         let title_bytes = self.metadata.title.as_bytes();
@@ -422,7 +415,7 @@ impl MobiBuilder {
         // INDX header
         indx.extend_from_slice(b"INDX");
         indx.extend_from_slice(&0xC0u32.to_be_bytes()); // Header length = 192
-        indx.extend_from_slice(&0u32.to_be_bytes());  // Unknown
+        indx.extend_from_slice(&0u32.to_be_bytes()); // Unknown
         indx.resize(192, 0); // Pad to 192 bytes
 
         // For MOBI 6, we'll use a simple flat index
@@ -442,9 +435,7 @@ impl MobiBuilder {
         let pdb_header = self.build_palmdb_header(num_records as u16);
 
         // Build MOBI header (Record 0 content)
-        let text_length: u32 = self.text_records.iter()
-            .map(|r| r.len())
-            .sum::<usize>() as u32; // Uncompressed length estimate
+        let text_length: u32 = self.text_records.iter().map(|r| r.len()).sum::<usize>() as u32; // Uncompressed length estimate
         let mobi_header = self.build_mobi_header(text_length);
 
         // Calculate record offsets

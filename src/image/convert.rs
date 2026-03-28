@@ -62,10 +62,7 @@ pub fn detect_format(data: &[u8]) -> Option<ImageFormat> {
     }
 
     // WebP: RIFF...WEBP
-    if data.len() >= 12
-        && &data[0..4] == b"RIFF"
-        && &data[8..12] == b"WEBP"
-    {
+    if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
         // WebP will be converted to JPEG or PNG
         return Some(ImageFormat::Jpeg);
     }
@@ -78,17 +75,14 @@ pub fn is_supported_format(data: &[u8]) -> bool {
     detect_format(data).is_some()
 }
 
-use std::io::{self, Cursor};
 use image::GenericImageView;
+use std::io::{self, Cursor};
 
 /// Process image data according to configuration
 ///
 /// Returns (processed_image_data, warnings)
 /// Returns Ok(Vec::new()) if image should be skipped
-pub fn process_image(
-    data: &[u8],
-    config: &ImageConfig,
-) -> io::Result<(Vec<u8>, Vec<String>)> {
+pub fn process_image(data: &[u8], config: &ImageConfig) -> io::Result<(Vec<u8>, Vec<String>)> {
     let mut warnings = Vec::new();
 
     // Detect format
@@ -122,7 +116,7 @@ pub fn process_image(
         img.resize(
             config.max_dimensions.0.min(width),
             config.max_dimensions.1.min(height),
-            FilterType::Lanczos3
+            FilterType::Lanczos3,
         )
     } else {
         img
@@ -191,23 +185,24 @@ fn encode_image(
     format: ImageFormat,
     config: &ImageConfig,
 ) -> Result<Vec<u8>, io::Error> {
-    use image::{ImageEncoder, ExtendedColorType, Frame};
-    use image::codecs::jpeg::JpegEncoder;
-    use image::codecs::png::{PngEncoder, CompressionType as PngCompression};
     use image::codecs::gif::GifEncoder;
+    use image::codecs::jpeg::JpegEncoder;
+    use image::codecs::png::{CompressionType as PngCompression, PngEncoder};
+    use image::{ExtendedColorType, Frame, ImageEncoder};
 
     let mut output = Vec::new();
 
     match format {
         ImageFormat::Jpeg => {
             let encoder = JpegEncoder::new_with_quality(&mut output, config.jpeg_quality);
-            encoder.write_image(
-                img.to_rgb8().as_raw(),
-                img.width(),
-                img.height(),
-                ExtendedColorType::Rgb8,
-            )
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            encoder
+                .write_image(
+                    img.to_rgb8().as_raw(),
+                    img.width(),
+                    img.height(),
+                    ExtendedColorType::Rgb8,
+                )
+                .map_err(io::Error::other)?;
         }
         ImageFormat::Png => {
             let encoder = PngEncoder::new_with_quality(
@@ -215,23 +210,26 @@ fn encode_image(
                 PngCompression::Fast,
                 image::codecs::png::FilterType::NoFilter,
             );
-            encoder.write_image(
-                img.to_rgb8().as_raw(),
-                img.width(),
-                img.height(),
-                ExtendedColorType::Rgb8,
-            )
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            encoder
+                .write_image(
+                    img.to_rgb8().as_raw(),
+                    img.width(),
+                    img.height(),
+                    ExtendedColorType::Rgb8,
+                )
+                .map_err(io::Error::other)?;
         }
         ImageFormat::Gif => {
             let mut encoder = GifEncoder::new(&mut output);
             let frame = Frame::new(img.to_rgba8());
-            encoder.encode_frame(frame)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            encoder.encode_frame(frame).map_err(io::Error::other)?;
         }
         ImageFormat::Auto => {
             // Shouldn't happen - format should be resolved by now
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Auto format not supported for encoding"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Auto format not supported for encoding",
+            ));
         }
     }
 
@@ -282,17 +280,14 @@ mod tests {
     #[test]
     fn test_process_jpeg_no_conversion_needed() {
         // Create a minimal JPEG in memory using the image crate
-        use image::{Rgb, RgbImage, ImageEncoder};
+        use image::{ImageEncoder, Rgb, RgbImage};
 
         // Create a simple 10x10 red image
         let img = RgbImage::from_fn(10, 10, |_, _| Rgb([255, 0, 0]));
 
         // Encode as JPEG
         let mut jpeg_data = Vec::new();
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-            &mut jpeg_data,
-            85,
-        );
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_data, 85);
         encoder
             .write_image(
                 img.as_raw(),
@@ -320,15 +315,12 @@ mod tests {
     #[test]
     fn test_process_jpeg_downsampling() {
         // Create a JPEG that's larger than max dimensions
-        use image::{Rgb, RgbImage, ImageEncoder};
+        use image::{ImageEncoder, Rgb, RgbImage};
 
         let img = RgbImage::from_fn(200, 200, |_, _| Rgb([255, 0, 0]));
 
         let mut jpeg_data = Vec::new();
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-            &mut jpeg_data,
-            85,
-        );
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_data, 85);
         encoder
             .write_image(
                 img.as_raw(),

@@ -7,14 +7,28 @@ use std::collections::HashMap;
 
 /// Check if a tag is supported in MOBI 6
 pub fn is_supported_tag(tag: &str) -> bool {
-    matches!(tag.to_lowercase().as_str(),
-        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" |
-        "p" | "br" |
-        "i" | "b" | "u" |
-        "ul" | "ol" | "li" |
-        "table" | "tr" | "td" | "th" |
-        "img" |
-        "div" | "span"  // Limited support - stripped if no attributes
+    matches!(
+        tag.to_lowercase().as_str(),
+        "h1" | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "p"
+            | "br"
+            | "i"
+            | "b"
+            | "u"
+            | "ul"
+            | "ol"
+            | "li"
+            | "table"
+            | "tr"
+            | "td"
+            | "th"
+            | "img"
+            | "div"
+            | "span" // Limited support - stripped if no attributes
     )
 }
 

@@ -1,7 +1,7 @@
 //! MOBI 6 export integration tests
 
-use std::io::Cursor;
 use boko::{Book, Format};
+use std::io::Cursor;
 
 #[test]
 fn test_epub_to_mobi_export() {
@@ -18,13 +18,17 @@ fn test_epub_to_mobi_export() {
 
     // Export to MOBI
     let mut output = Cursor::new(Vec::new());
-    book.export(Format::Mobi, &mut output).expect("Failed to export to MOBI");
+    book.export(Format::Mobi, &mut output)
+        .expect("Failed to export to MOBI");
 
     // Verify output
     let mobi_data = output.into_inner();
 
     // Check PalmDB header
-    assert!(mobi_data.len() > 78, "MOBI file too short for PalmDB header");
+    assert!(
+        mobi_data.len() > 78,
+        "MOBI file too short for PalmDB header"
+    );
 
     // Check database name is in header (first 32 bytes)
     let header_name = String::from_utf8_lossy(&mobi_data[0..32]);

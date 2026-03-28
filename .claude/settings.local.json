@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(cargo search:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo doc:*)",
+      "Bash(cat:*)",
+      "Bash(python3:*)",
+      "Bash(xxd)",
+      "Bash(rustc --print sysroot)",
+      "Bash(grep -r 'pub struct Frame' C:/Users/buikh/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/image-0.25.*/src/)",
+      "Bash(curl -s -o test.jpg \"https://raw.githubusercontent.com/image-rs/image/master/examples/fractal.jpg\")",
+      "Bash(wget -q -O test.jpg \"https://raw.githubusercontent.com/image-rs/image/master/examples/fractal.jpg\")"
+    ]
+  }
+}
