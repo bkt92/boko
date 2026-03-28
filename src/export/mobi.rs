@@ -386,6 +386,24 @@ impl MobiBuilder {
         header
     }
 
+    /// Build NCX index from TOC entries
+    fn build_ncx_index(&self) -> io::Result<Vec<u8>> {
+        // For Phase 3, create simplified INDX record
+        let mut indx = Vec::new();
+
+        // INDX header
+        indx.extend_from_slice(b"INDX");
+        indx.extend_from_slice(&0xC0u32.to_be_bytes()); // Header length = 192
+        indx.extend_from_slice(&0u32.to_be_bytes());  // Unknown
+        indx.resize(192, 0); // Pad to 192 bytes
+
+        // For MOBI 6, we'll use a simple flat index
+        // TODO: Full implementation in later phase
+        // This is a placeholder that creates a minimal valid INDX
+
+        Ok(indx)
+    }
+
     /// Write the complete PDB file
     fn write<W: Write + Seek>(&self, _writer: &mut W) -> io::Result<()> {
         // TODO: Implement in subsequent tasks
