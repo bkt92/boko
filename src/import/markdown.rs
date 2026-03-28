@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::import::{ChapterId, Importer, SpineEntry};
 use crate::io::ByteSource;
 use crate::model::{
-    AnchorTarget, Chapter, GlobalNodeId, Landmark, Metadata, Node, NodeId, Role, TextRange, TocEntry,
+    AnchorTarget, Chapter, GlobalNodeId, Landmark, Metadata, Node, NodeId, Role, TocEntry,
 };
 use crate::style::{ComputedStyle, FontStyle, FontWeight};
 
@@ -70,7 +70,7 @@ struct IrBuilder {
 
 impl IrBuilder {
     fn new() -> Self {
-        let mut chapter = Chapter::new();
+        let chapter = Chapter::new();
         let root = chapter.root();
         Self {
             chapter,
@@ -260,29 +260,34 @@ impl MarkdownImporter {
                     // Fill in the title for the last TOC entry
                     if let Some((_, entry_path)) = toc_stack.last() {
                         let slug = slugify(&current_heading_text);
-                        let chapter_num = if chapter_index > 0 { chapter_index - 1 } else { 0 };
+                        let chapter_num = if chapter_index > 0 {
+                            chapter_index - 1
+                        } else {
+                            0
+                        };
                         let href = format!("chapter-{}.md#{}", chapter_num + 1, slug);
 
                         // Update entry at path
-                        if let Some(&index) = entry_path.first() {
-                            if let Some(entry) = self.toc.get_mut(index) {
-                                if entry_path.len() == 1 {
-                                    // Top-level entry
-                                    entry.title = current_heading_text.clone();
-                                    entry.href = href;
-                                } else {
-                                    // Nested entry - traverse children
-                                    let mut current_entry = entry;
-                                    for &child_index in &entry_path[1..] {
-                                        if let Some(child) = current_entry.children.get_mut(child_index) {
-                                            current_entry = child;
-                                        } else {
-                                            break;
-                                        }
+                        if let Some(&index) = entry_path.first()
+                            && let Some(entry) = self.toc.get_mut(index)
+                        {
+                            if entry_path.len() == 1 {
+                                // Top-level entry
+                                entry.title = current_heading_text.clone();
+                                entry.href = href;
+                            } else {
+                                // Nested entry - traverse children
+                                let mut current_entry = entry;
+                                for &child_index in &entry_path[1..] {
+                                    if let Some(child) = current_entry.children.get_mut(child_index)
+                                    {
+                                        current_entry = child;
+                                    } else {
+                                        break;
                                     }
-                                    current_entry.title = current_heading_text.clone();
-                                    current_entry.href = href;
                                 }
+                                current_entry.title = current_heading_text.clone();
+                                current_entry.href = href;
                             }
                         }
                     }
@@ -326,7 +331,10 @@ impl MarkdownImporter {
 
         for event in parser {
             match event {
-                Event::Start(Tag::Heading { level: HeadingLevel::H1, .. }) => {
+                Event::Start(Tag::Heading {
+                    level: HeadingLevel::H1,
+                    ..
+                }) => {
                     in_heading = true;
                 }
                 Event::Text(text) if in_heading => {
@@ -453,7 +461,8 @@ fn extract_node_text(chapter: &Chapter, node_id: NodeId) -> String {
     while let Some(current_id) = stack.pop() {
         if let Some(node) = chapter.node(current_id) {
             // Push children in reverse order for left-to-right traversal
-            chapter.children(current_id)
+            chapter
+                .children(current_id)
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
@@ -563,15 +572,15 @@ impl Importer for MarkdownImporter {
 
             // Find all heading nodes
             for node_id in chapter.iter_dfs() {
-                if let Some(node) = chapter.node(node_id) {
-                    if matches!(node.role, Role::Heading(_)) {
-                        // Extract text from heading's descendants using helper function
-                        let text = extract_node_text(chapter, node_id);
-                        let slug = slugify(&text);
-                        let key = format!("{}#{}", virtual_path, slug);
-                        self.anchor_map
-                            .insert(key, GlobalNodeId::new(*chapter_id, node_id));
-                    }
+                if let Some(node) = chapter.node(node_id)
+                    && matches!(node.role, Role::Heading(_))
+                {
+                    // Extract text from heading's descendants using helper function
+                    let text = extract_node_text(chapter, node_id);
+                    let slug = slugify(&text);
+                    let key = format!("{}#{}", virtual_path, slug);
+                    self.anchor_map
+                        .insert(key, GlobalNodeId::new(*chapter_id, node_id));
                 }
             }
         }
@@ -586,7 +595,7 @@ impl Importer for MarkdownImporter {
     }
 
     fn load_chapter(&mut self, id: ChapterId) -> io::Result<Chapter> {
-        use pulldown_cmark::{Event, Tag};
+        use pulldown_cmark::Event;
 
         // Get chapter content
         let range = self.chapter_ranges.get(id.0 as usize).ok_or_else(|| {
@@ -617,7 +626,10 @@ impl Importer for MarkdownImporter {
                             builder.chapter.semantics.set_src(node_id, &url);
 
                             // Track asset if not external
-                            if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("data:") {
+                            if !url.starts_with("http://")
+                                && !url.starts_with("https://")
+                                && !url.starts_with("data:")
+                            {
                                 let base_dir = self.path.parent().unwrap_or(Path::new("."));
                                 let full_path = base_dir.join(&url);
                                 if !self.asset_paths.contains(&full_path) {
