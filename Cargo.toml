@@ -44,6 +44,9 @@ base64 = "0.22"
 # Image processing for format conversion and optimization
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 
+# Markdown parsing
+pulldown-cmark = "0.12"
+
 # Ion binary format parsing for KFX dump tool
 ion-rs = { version = "1.0.0-rc.11", features = ["experimental-reader-writer"] }
 
@@ -54,6 +57,8 @@ sha1_smol = { version = "1.0", features = ["std"] }
 clap = { version = "4", features = ["derive"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+# For Phase 2: YAML front matter parsing (optional feature)
+serde_yaml = { version = "0.9", optional = true }
 xml5ever = "0.39.0"
 
 # Native: use fast zlib-rs
