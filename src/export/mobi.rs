@@ -405,8 +405,72 @@ impl MobiBuilder {
     }
 
     /// Write the complete PDB file
-    fn write<W: Write + Seek>(&self, _writer: &mut W) -> io::Result<()> {
-        // TODO: Implement in subsequent tasks
+    fn write<W: Write + Seek>(&mut self, writer: &mut W) -> io::Result<()> {
+        // Calculate total number of records
+        // Record 0 (headers) + text records + image records
+        let num_records = 1 + self.text_records.len() + self.image_records.len();
+
+        // Build PalmDB header
+        let pdb_header = self.build_palmdb_header(num_records as u16);
+
+        // Build MOBI header (Record 0 content)
+        let text_length: u32 = self.text_records.iter()
+            .map(|r| r.len())
+            .sum::<usize>() as u32; // Uncompressed length estimate
+        let mobi_header = self.build_mobi_header(text_length);
+
+        // Calculate record offsets
+        let mut offsets = Vec::new();
+        let mut offset = pdb_header.len() + 8 * num_records + 2; // + gap
+
+        // Record 0 offset
+        offsets.push(offset);
+        offset += mobi_header.len();
+
+        // Text record offsets
+        for record in &self.text_records {
+            offsets.push(offset);
+            offset += record.len();
+        }
+
+        // Image record offsets
+        for record in &self.image_records {
+            offsets.push(offset);
+            offset += record.len();
+        }
+
+        // Write PalmDB header
+        writer.write_all(&pdb_header)?;
+
+        // Write record info list (8 bytes per record)
+        for (i, &record_offset) in offsets.iter().enumerate() {
+            // Offset (4 bytes)
+            writer.write_all(&record_offset.to_be_bytes())?;
+
+            // Attributes (1 byte)
+            writer.write_all(&[0x00])?;
+
+            // Unique ID (3 bytes) - 2*i
+            let unique_id = (2 * i) as u32;
+            writer.write_all(&unique_id.to_be_bytes()[1..4])?;
+        }
+
+        // Write gap (2 bytes)
+        writer.write_all(&[0x00, 0x00])?;
+
+        // Write Record 0 (MOBI header + title)
+        writer.write_all(&mobi_header)?;
+
+        // Write text records
+        for record in &self.text_records {
+            writer.write_all(record)?;
+        }
+
+        // Write image records
+        for record in &self.image_records {
+            writer.write_all(record)?;
+        }
+
         Ok(())
     }
 }
