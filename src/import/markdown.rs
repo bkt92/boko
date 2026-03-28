@@ -8,8 +8,9 @@ use std::sync::Arc;
 use crate::import::{ChapterId, Importer, SpineEntry};
 use crate::io::ByteSource;
 use crate::model::{
-    AnchorTarget, GlobalNodeId, Landmark, Metadata, TocEntry,
+    AnchorTarget, Chapter, GlobalNodeId, Landmark, Metadata, Node, NodeId, Role, TextRange, TocEntry,
 };
+use crate::style::{ComputedStyle, FontStyle, FontWeight};
 
 /// Markdown format importer.
 pub struct MarkdownImporter {
@@ -58,6 +59,61 @@ struct ChapterRange {
     start: usize,
     end: usize,
     virtual_path: String,
+}
+
+/// Builder for constructing IR from Markdown events.
+struct IrBuilder {
+    chapter: Chapter,
+    parent_stack: Vec<NodeId>,
+    text_buffer: String,
+}
+
+impl IrBuilder {
+    fn new() -> Self {
+        let mut chapter = Chapter::new();
+        let root = chapter.root();
+        Self {
+            chapter,
+            parent_stack: vec![root],
+            text_buffer: String::new(),
+        }
+    }
+
+    fn flush_text(&mut self) {
+        if self.text_buffer.is_empty() {
+            return;
+        }
+
+        let text_range = self.chapter.append_text(&self.text_buffer);
+        let text_id = self.chapter.alloc_node(Node::text(text_range));
+
+        if let Some(&parent) = self.parent_stack.last() {
+            self.chapter.append_child(parent, text_id);
+        }
+
+        self.text_buffer.clear();
+    }
+
+    fn push_node(&mut self, role: Role) -> NodeId {
+        self.flush_text();
+        let node_id = self.chapter.alloc_node(Node::new(role));
+        if let Some(&parent) = self.parent_stack.last() {
+            self.chapter.append_child(parent, node_id);
+        }
+        self.parent_stack.push(node_id);
+        node_id
+    }
+
+    fn pop_node(&mut self) {
+        self.flush_text();
+        if self.parent_stack.len() > 1 {
+            self.parent_stack.pop();
+        }
+    }
+
+    fn build(self) -> Chapter {
+        self.chapter
+    }
 }
 
 impl MarkdownImporter {
@@ -170,6 +226,96 @@ impl MarkdownImporter {
         }
         None
     }
+
+    fn handle_start_tag(&self, builder: &mut IrBuilder, tag: pulldown_cmark::Tag) {
+        use pulldown_cmark::Tag;
+
+        match tag {
+            Tag::Paragraph => {
+                builder.push_node(Role::Paragraph);
+            }
+            Tag::Heading { level, .. } => {
+                builder.push_node(Role::Heading(level as u8));
+            }
+            Tag::BlockQuote(_) => {
+                builder.push_node(Role::BlockQuote);
+            }
+            Tag::CodeBlock(..) => {
+                builder.push_node(Role::CodeBlock);
+            }
+            Tag::List(..) => {
+                // Default to unordered list
+                builder.push_node(Role::UnorderedList);
+            }
+            Tag::Item => {
+                builder.push_node(Role::ListItem);
+            }
+            Tag::Table(..) => {
+                builder.push_node(Role::Table);
+            }
+            Tag::TableHead => {
+                builder.push_node(Role::TableHead);
+            }
+            Tag::TableRow => {
+                builder.push_node(Role::TableRow);
+            }
+            Tag::TableCell => {
+                builder.push_node(Role::TableCell);
+            }
+            Tag::Emphasis => {
+                // Create Inline node with italic style
+                let style = ComputedStyle {
+                    font_style: FontStyle::Italic,
+                    ..Default::default()
+                };
+                let style_id = builder.chapter.styles.intern(style);
+                let inline_id = builder.push_node(Role::Inline);
+                builder.chapter.node_mut(inline_id).unwrap().style = style_id;
+            }
+            Tag::Strong => {
+                // Create Inline node with bold style
+                let style = ComputedStyle {
+                    font_weight: FontWeight::BOLD,
+                    ..Default::default()
+                };
+                let style_id = builder.chapter.styles.intern(style);
+                let inline_id = builder.push_node(Role::Inline);
+                builder.chapter.node_mut(inline_id).unwrap().style = style_id;
+            }
+            Tag::Link { .. } => {
+                builder.push_node(Role::Link);
+            }
+            Tag::Image { .. } => {
+                builder.push_node(Role::Image);
+            }
+            _ => {} // Ignore other tags
+        }
+    }
+
+    fn handle_end_tag(&self, builder: &mut IrBuilder, tag: pulldown_cmark::TagEnd) {
+        use pulldown_cmark::TagEnd;
+
+        match tag {
+            TagEnd::Paragraph
+            | TagEnd::Heading(_)
+            | TagEnd::BlockQuote(_)
+            | TagEnd::CodeBlock
+            | TagEnd::List(_)
+            | TagEnd::Item
+            | TagEnd::Table
+            | TagEnd::TableHead
+            | TagEnd::TableRow
+            | TagEnd::TableCell
+            | TagEnd::Link
+            | TagEnd::Image => {
+                builder.pop_node();
+            }
+            TagEnd::Emphasis | TagEnd::Strong => {
+                // Already handled in start_tag
+            }
+            _ => {}
+        }
+    }
 }
 
 fn file_stem(path: &Path) -> String {
@@ -261,5 +407,56 @@ impl Importer for MarkdownImporter {
             return Some(AnchorTarget::External(href.to_string()));
         }
         None
+    }
+
+    fn load_chapter(&mut self, id: ChapterId) -> io::Result<Chapter> {
+        use pulldown_cmark::{Event, Tag};
+
+        // Get chapter content
+        let range = self.chapter_ranges.get(id.0 as usize).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Chapter {} not found", id.0),
+            )
+        })?;
+
+        let content = &self.content[range.start..range.end];
+        let parser = pulldown_cmark::Parser::new(content);
+
+        let mut builder = IrBuilder::new();
+
+        for event in parser {
+            match event {
+                Event::Start(tag) => self.handle_start_tag(&mut builder, tag),
+                Event::End(tag) => self.handle_end_tag(&mut builder, tag),
+                Event::Text(text) => {
+                    builder.text_buffer.push_str(&text);
+                }
+                Event::Code(code) => {
+                    // Inline code: create Inline node with monospace style
+                    let style = ComputedStyle {
+                        font_family: Some("monospace".to_string()),
+                        ..Default::default()
+                    };
+                    let style_id = builder.chapter.styles.intern(style);
+                    let inline_id = builder.push_node(Role::Inline);
+                    builder.chapter.node_mut(inline_id).unwrap().style = style_id;
+                    builder.text_buffer.push_str(&code);
+                    builder.flush_text(); // Flush to create Text node as child
+                    builder.pop_node();
+                }
+                Event::Rule => {
+                    builder.push_node(Role::Rule);
+                    builder.pop_node();
+                }
+                Event::SoftBreak | Event::HardBreak => {
+                    builder.push_node(Role::Break);
+                    builder.pop_node();
+                }
+                _ => {} // Ignore other events for now
+            }
+        }
+
+        Ok(builder.build())
     }
 }

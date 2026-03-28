@@ -31,3 +31,36 @@ fn test_open_markdown_file() {
         eprintln!("Book::open doesn't support Markdown yet (expected until Task 3)");
     }
 }
+
+#[test]
+fn test_load_chapter_paragraphs() {
+    use boko::{Book, Role};
+    use std::path::Path;
+
+    let path = Path::new("tests/fixtures/markdown/simple.md");
+    if !path.exists() {
+        eprintln!("Skipping: fixture not found");
+        return;
+    }
+
+    let mut book = Book::open(path).unwrap();
+    let chapter = book.load_chapter(boko::import::ChapterId(0)).unwrap();
+
+    // Should have proper IR structure (not just root + 1 from HTML parsing)
+    // Chapter 0 should have: H1 "My Document", paragraph, H2 "Section One", paragraph
+    let mut found_heading = false;
+    let mut found_paragraph = false;
+
+    for id in chapter.iter_dfs() {
+        if let Some(node) = chapter.node(id) {
+            match node.role {
+                Role::Heading(_) => found_heading = true,
+                Role::Paragraph => found_paragraph = true,
+                _ => {}
+            }
+        }
+    }
+
+    assert!(found_heading, "Should find at least one heading node");
+    assert!(found_paragraph, "Should find at least one paragraph node");
+}
