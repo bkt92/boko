@@ -514,10 +514,6 @@ fn convert(
         Format::Markdown
     };
 
-    if output_format == Format::Mobi {
-        return Err("MOBI output is not supported; use .azw3 instead".to_string());
-    }
-
     // Check if writing to stdout
     let to_stdout = output.is_none() || output == Some("-");
 
