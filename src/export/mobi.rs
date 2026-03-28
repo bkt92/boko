@@ -275,6 +275,117 @@ impl MobiBuilder {
         Ok(())
     }
 
+    /// Build MOBI 6 header (Record 0 content, after PalmDB header)
+    fn build_mobi_header(&self, text_length: u32) -> Vec<u8> {
+        let mut header = Vec::new();
+
+        // Compression type (2 bytes) - PalmDoc = 2
+        header.extend_from_slice(&2u16.to_be_bytes());
+
+        // Reserved (2 bytes)
+        header.extend_from_slice(&0u16.to_be_bytes());
+
+        // Text length (4 bytes)
+        header.extend_from_slice(&text_length.to_be_bytes());
+
+        // Text record count (2 bytes)
+        let record_count = self.text_records.len() as u16;
+        header.extend_from_slice(&record_count.to_be_bytes());
+
+        // Text record size (2 bytes) - 4096
+        header.extend_from_slice(&4096u16.to_be_bytes());
+
+        // Encryption (2 bytes) - None = 0
+        header.extend_from_slice(&0u16.to_be_bytes());
+
+        // Reserved (2 bytes)
+        header.extend_from_slice(&0u16.to_be_bytes());
+
+        // Unknown (4 bytes)
+        header.extend_from_slice(&0u32.to_be_bytes());
+
+        // MOBI header length (4 bytes) - will update at end
+        let header_length_offset = header.len();
+        header.extend_from_slice(&0u32.to_be_bytes());
+
+        // MOBI type (4 bytes) - 2 = standard book
+        header.extend_from_slice(&2u32.to_be_bytes());
+
+        // Codepage (4 bytes) - 65001 = UTF-8
+        let codepage: u32 = match self.config.encoding {
+            MobiEncoding::Utf8 => 65001,
+            MobiEncoding::Cp1252 => 1252,
+        };
+        header.extend_from_slice(&codepage.to_be_bytes());
+
+        // Unknown (4 bytes)
+        header.extend_from_slice(&0u32.to_be_bytes());
+
+        // Unknown (4 bytes)
+        header.extend_from_slice(&0u32.to_be_bytes());
+
+        // Skip to title offset (0x54)
+        while header.len() < 0x54 {
+            header.push(0);
+        }
+
+        // Title offset (4 bytes)
+        let title_offset = 232u32; // After header
+        header.extend_from_slice(&title_offset.to_be_bytes());
+
+        // Title length (4 bytes)
+        let title_len = self.metadata.title.len() as u32;
+        header.extend_from_slice(&title_len.to_be_bytes());
+
+        // Language (4 bytes) - 0x09 = English
+        header.extend_from_slice(&0x09u32.to_be_bytes());
+
+        // Unknown (4 bytes)
+        header.extend_from_slice(&0u32.to_be_bytes());
+
+        // Unknown (4 bytes)
+        header.extend_from_slice(&0u32.to_be_bytes());
+
+        // Skip to MOBI version (0x68)
+        while header.len() < 0x68 {
+            header.push(0);
+        }
+
+        // MOBI version (4 bytes) - 6 for MOBI 6
+        header.extend_from_slice(&6u32.to_be_bytes());
+
+        // First image index (4 bytes)
+        let first_image = if self.image_records.is_empty() {
+            0xFFFFFFFF // NULL_INDEX
+        } else {
+            self.text_records.len() as u32
+        };
+        header.extend_from_slice(&first_image.to_be_bytes());
+
+        // Unknown (4 bytes)
+        header.extend_from_slice(&0u32.to_be_bytes());
+
+        // Skip to EXTH flags (0x80)
+        while header.len() < 0x80 {
+            header.push(0);
+        }
+
+        // EXTH flags (4 bytes) - 0x40 = EXTH present
+        header.extend_from_slice(&0x40u32.to_be_bytes());
+
+        // Update header length at stored offset
+        let header_len = header.len() as u32;
+        let len_bytes = header_len.to_be_bytes();
+        header[header_length_offset..header_length_offset + 4]
+            .copy_from_slice(&len_bytes);
+
+        // Add title after header
+        let title_bytes = self.metadata.title.as_bytes();
+        header.extend_from_slice(title_bytes);
+
+        header
+    }
+
     /// Write the complete PDB file
     fn write<W: Write + Seek>(&self, _writer: &mut W) -> io::Result<()> {
         // TODO: Implement in subsequent tasks
