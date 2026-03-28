@@ -81,6 +81,34 @@ impl MobiExporter {
             warnings: Vec::new(),
         })
     }
+
+    /// Collect HTML content from book chapters
+    fn collect_html_content(&self, book: &mut Book) -> io::Result<String> {
+        let mut html = String::new();
+
+        // Simple HTML wrapper
+        html.push_str("<html><body>");
+
+        // Get spine (reading order) - collect entries to avoid borrow checker
+        let spine_entries: Vec<_> = book.spine().to_vec();
+
+        for entry in spine_entries {
+            match book.load_raw(entry.id) {
+                Ok(data) => {
+                    // Convert bytes to string, ignoring encoding issues
+                    let chapter_html = String::from_utf8_lossy(&data);
+                    html.push_str(&chapter_html);
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to load chapter {:?}: {}", entry.id, e);
+                }
+            }
+        }
+
+        html.push_str("</body></html>");
+
+        Ok(html)
+    }
 }
 
 impl Default for MobiExporter {
@@ -475,15 +503,23 @@ impl MobiBuilder {
     }
 }
 
-// Exporter trait will be implemented in a later task
+// Exporter trait implementation
 impl Exporter for MobiExporter {
-    fn export<W: Write + Seek>(&self, _book: &mut Book, _writer: &mut W) -> io::Result<()> {
-        // TODO: Implement in Phase 3
-        // For now, return unsupported to prevent crashes
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "MOBI 6 export not yet implemented",
-        ))
+    fn export<W: Write + Seek>(&self, book: &mut Book, writer: &mut W) -> io::Result<()> {
+        // Create builder
+        let mut builder = MobiBuilder::new(book, self.config.clone())?;
+
+        // Get HTML content from book
+        // For now, use a simple approach - in production would use normalize_book()
+        let html_content = self.collect_html_content(book)?;
+
+        // Build text records
+        builder.build_text_records(&html_content)?;
+
+        // Write file
+        builder.write(writer)?;
+
+        Ok(())
     }
 }
 
