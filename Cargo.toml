@@ -41,6 +41,9 @@ encoding_rs = "0.8"
 # Base64 encoding for KFX raw media
 base64 = "0.22"
 
+# Image processing for format conversion and optimization
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+
 # Ion binary format parsing for KFX dump tool
 ion-rs = { version = "1.0.0-rc.11", features = ["experimental-reader-writer"] }
 
