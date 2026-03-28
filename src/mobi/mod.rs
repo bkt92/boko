@@ -4,6 +4,7 @@ mod headers;
 pub mod huffcdic;
 pub(crate) mod index;
 pub mod palmdoc;
+pub mod html_filter;
 pub mod parser;
 
 // Internal modules for AZW3 export
