@@ -55,14 +55,15 @@ src/export/mobi.rs (new)
 Reuses from existing code:
 ├── src/export/html_synth.rs  - HTML synthesis (reused with MOBI 6 constraints)
 ├── src/export/normalize.rs  - Normalization pipeline (reused)
-└── src/mobi/:
-    ├── palmdoc.rs        - PalmDoc compression
-    ├── headers.rs        - MOBI header structures
-    └── index.rs          - Index building utilities
+├── src/mobi/:
+│   ├── palmdoc.rs        - PalmDoc compression
+│   ├── headers.rs        - MOBI header structures
+│   └── index.rs          - Index building utilities
+└── src/image/:
+    └── convert.rs        - Shared image processing (downscale, format convert)
 
 New modules:
 ├── src/mobi/html_filter.rs  - Filter HTML to MOBI 6 supported tags
-└── src/mobi/image_convert.rs - Image processing (downscale, format convert)
 ```
 
 ### Key Design Changes from Initial Draft
@@ -93,8 +94,10 @@ MobiBuilder::filter_html()
     └─ Collect warnings
     ↓
 MobiBuilder::process_images()
-    ├─ Downscale oversized images
-    ├─ Convert unsupported formats
+    ├─ Use shared process_image() from src/image/convert.rs
+    ├─ Downscale oversized images (configurable)
+    ├─ Convert unsupported formats (SVG → PNG, WebP → JPEG)
+    ├─ Build image_path_to_record HashMap
     └─ Collect warnings
     ↓
 MobiBuilder::build_text_records()
@@ -115,6 +118,73 @@ MobiBuilder::build_headers()
     ↓
 MobiBuilder::write()
     └─ Write PDB file with records
+```
+
+## Shared Module Architecture
+
+The `src/image/` module is designed as a shared infrastructure for image processing across all ebook exporters.
+
+### Module Structure
+
+```
+src/image/
+├── mod.rs           - Module exports, public API
+├── convert.rs       - Image processing functions (process_image, detect_format)
+└── (future) optimize.rs  - Advanced optimization for EPUB/AZW3 size reduction
+```
+
+### Design Rationale
+
+**Why Shared?**
+1. **Code reuse**: EPUB, AZW3, and MOBI exporters all need image processing
+2. **Consistency**: Same quality/compression settings across formats
+3. **Maintainability**: Single place to update image processing logic
+4. **Testing**: Test once, use everywhere
+
+**Current Scope (Phase 0):**
+- Format detection and conversion
+- Dimension-based downsampling
+- File size optimization
+- Quality/compression control
+
+**Future Enhancements:**
+- Smart format selection (JPEG for photos, PNG for graphics)
+- Content-aware downsampling (preserve faces/text)
+- Multi-format optimization (WebP for EPUB 3.1+)
+- Progressive JPEG encoding
+- Color space optimization (sRGB → grayscale for B&W content)
+
+### Integration Pattern
+
+Each exporter creates its own `ImageConfig` based on format requirements:
+
+```rust
+// MOBI 6: Conservative limits for legacy devices
+let mobi_config = ImageConfig {
+    max_dimensions: (2048, 2048),
+    max_file_size: 10 * 1024 * 1024,
+    output_format: ImageFormat::Auto,
+    jpeg_quality: 85,
+    png_compression: 6,
+};
+
+// EPUB 3: Modern limits, aggressive optimization
+let epub_config = ImageConfig {
+    max_dimensions: (4000, 4000),
+    max_file_size: 2 * 1024 * 1024,  // Target 2MB per image
+    output_format: ImageFormat::Jpeg,  // Force JPEG for photos
+    jpeg_quality: 75,  // Higher compression
+    png_compression: 9,
+};
+
+// AZW3 (KF8): Balanced settings
+let azw3_config = ImageConfig {
+    max_dimensions: (3000, 3000),
+    max_file_size: 5 * 1024 * 1024,
+    output_format: ImageFormat::Auto,
+    jpeg_quality: 80,
+    png_compression: 7,
+};
 ```
 
 ## MOBI 6 File Format Structure
@@ -552,27 +622,95 @@ pub fn filter_html_for_mobi6(html: &str) -> (String, Vec<String>);
 pub fn is_supported_tag(tag: &str) -> bool;
 ```
 
-### 4. Image Converter
+### 4. Shared Image Processing Module
 
-**Location:** `src/mobi/image_convert.rs`
+**Location:** `src/image/convert.rs` (shared module, not MOBI-specific)
 
-Process images for MOBI 6 compatibility (downscale, format conversion if needed).
+**Purpose:** General image processing utilities for use across multiple exporters:
+- MOBI 6 export: Downscale and format convert for legacy device compatibility
+- EPUB/AZW3 export (future): Optimize images to reduce file size
+- Other formats: As needed
+
+**Design Principles:**
+- **Format-agnostic**: No MOBI-specific logic in this module
+- **Configurable**: Accept parameters for max dimensions, file size, output format
+- **Reusable**: Return processed data + warnings, caller decides how to use
 
 **Operations:**
 - Check image dimensions
-- Downscale if too large (> 2048x2048)
-- Convert unsupported formats (SVG → PNG, WebP → JPEG)
-- Optimize file size if needed
+- Downscale if too large (configurable threshold)
+- Convert between formats (SVG → PNG, WebP → JPEG, etc.)
+- Optimize file size (quality adjustment for JPEG/PNG)
+- Preserve aspect ratio during resize
 
 **Dependencies:**
-- `image` crate (feature-gated: `gif`, `jpeg`, `png`)
+- `image` crate (feature-gated: `gif`, `jpeg`, `png`, `webp`)
 
 **API:**
 ```rust
-pub fn process_image(data: &[u8], max_size: (u32, u32)) -> io::Result<(Vec<u8>, Vec<String>)>;
-// Returns (processed_image_data, warnings)
+/// Image processing configuration
+#[derive(Clone, Debug)]
+pub struct ImageConfig {
+    pub max_dimensions: (u32, u32),      // (width, height) - default (2048, 2048)
+    pub max_file_size: u64,               // bytes - default 10MB
+    pub output_format: ImageFormat,       // Prefer JPEG/PNG, Auto for keep original
+    pub jpeg_quality: u8,                 // 1-100, default 85
+    pub png_compression: u8,              // 0-9, default 6
+}
 
-pub fn is_supported_format(path: &str) -> bool;
+#[derive(Clone, Debug)]
+pub enum ImageFormat {
+    Auto,      // Keep original format if supported
+    Jpeg,
+    Png,
+    Gif,
+}
+
+/// Process image data according to configuration
+///
+/// Returns (processed_image_data, warnings)
+/// Returns Ok(Vec::new()) if image should be skipped (e.g., unsupported format that can't be converted)
+pub fn process_image(
+    data: &[u8],
+    config: &ImageConfig,
+) -> io::Result<(Vec<u8>, Vec<String>)>;
+
+/// Check if image format is natively supported (no conversion needed)
+pub fn is_supported_format(data: &[u8]) -> bool;
+
+/// Detect image format from bytes
+pub fn detect_format(data: &[u8]) -> Option<ImageFormat>;
+```
+
+**Usage in MOBI 6 Export:**
+```rust
+use crate::image::convert::{ImageConfig, ImageFormat, process_image};
+
+// In MobiBuilder::process_images():
+let config = ImageConfig {
+    max_dimensions: self.config.max_image_size,
+    max_file_size: self.config.max_image_file_size,
+    output_format: ImageFormat::Auto,  // Prefer PNG/JPEG
+    jpeg_quality: 85,
+    png_compression: 6,
+};
+
+let (processed, warnings) = process_image(&image_data, &config)?;
+self.warnings.extend(warnings);
+```
+
+**Future Usage for EPUB/AZW3 Optimization:**
+```rust
+// In future EpubExporter with image optimization:
+let config = ImageConfig {
+    max_dimensions: (3000, 3000),  // Higher limit for modern devices
+    max_file_size: 5 * 1024 * 1024,  // 5MB target
+    output_format: ImageFormat::Jpeg,  // Force JPEG for photos
+    jpeg_quality: 75,  // Aggressive compression
+    png_compression: 9,
+};
+
+let (optimized, warnings) = process_image(&original_image, &config)?;
 ```
 
 ## Warning System
@@ -709,19 +847,27 @@ Note: We prefer PNG/JPEG for output. GIF feature is only for decoding existing i
 - Style attribute conversion to basic formatting
 - Nested element handling
 - Table structure preservation
+- Image reference conversion (`<img src>` → `<img recindex>`)
 
-**Image Processing** (`src/mobi/image_convert.rs` tests):
-- PNG/JPEG preservation (no conversion when possible)
+**Shared Image Processing** (`src/image/convert.rs` tests):
+- Format detection (PNG, JPEG, GIF, SVG, WebP)
+- PNG/JPEG preservation (no conversion when format is Auto)
 - SVG → PNG conversion
 - WebP → JPEG conversion
-- Large image downsampling (> 2048x2048)
-- File size optimization (> 10MB)
+- Large image downsampling (> max_dimensions)
+- File size optimization (> max_file_size)
+- Aspect ratio preservation during resize
+- JPEG quality settings (1-100)
+- PNG compression levels (0-9)
+- Error handling for corrupt/unsupported images
 
 **Header/Record Building** (`src/export/mobi.rs` tests):
 - MOBI 6 header generation (version 6, not 8)
+- PalmDB header writing (78-byte structure)
+- Record info list format (8 bytes per entry)
 - PalmDoc compression
 - Record size calculations (4KB chunks)
-- EXTH metadata
+- EXTH metadata writing
 - Image record references
 
 **Parsing Validation** (`tests/` integration):
@@ -729,6 +875,7 @@ Note: We prefer PNG/JPEG for output. GIF feature is only for decoding existing i
 - Verify MOBI header has correct version (6)
 - Verify text records decompress correctly
 - Verify index structures are valid
+- Verify image records can be extracted
 
 ### Integration Tests
 
@@ -761,6 +908,15 @@ Place in `tests/fixtures/mobi/`:
 
 ## Implementation Phases
 
+### Phase 0: Shared Image Module (Infrastructure)
+1. Create `src/image/mod.rs` and `src/image/convert.rs`
+2. Add `image` crate dependency (0.25, features: gif, jpeg, png, webp)
+3. Implement `ImageConfig` struct with configurable options
+4. Implement `process_image()` function with downscale and format conversion
+5. Implement format detection (`detect_format()`, `is_supported_format()`)
+6. Write comprehensive unit tests for image processing
+7. **Note:** This module is designed for reuse across all exporters (MOBI 6, EPUB, AZW3)
+
 ### Phase 1: Foundation
 1. Create `src/export/mobi.rs` with basic structure
 2. Implement `MobiExporter` and `MobiConfig`
@@ -773,32 +929,28 @@ Place in `tests/fixtures/mobi/`:
 2. Implement `filter_html_for_mobi6()` function
 3. Define supported tag set (h1-h6, p, br, i, b, u, ul, ol, li, table, tr, td, th, img)
 4. Implement CSS stripping/simplification
-5. Write unit tests for HTML filtering
+5. Implement `<img src>` → `<img recindex>` conversion
+6. Write unit tests for HTML filtering
 
-### Phase 3: Image Processing
-1. Create `src/mobi/image_convert.rs`
-2. Implement format detection (PNG/JPEG/SVG/WebP)
-3. Implement image downsampling (> 2048x2048)
-4. Implement format conversion (SVG → PNG, WebP → JPEG)
-5. Add `image` crate dependency (feature-gated: gif, jpeg, png)
-6. Write unit tests for image processing
-
-### Phase 4: MOBI 6 File Building
+### Phase 3: MOBI 6 File Building
 1. Implement `MobiBuilder` with state management
 2. Integrate with existing `normalize_book()` from `src/export/normalize.rs`
-3. Implement text record building with PalmDoc compression
-4. Implement MOBI 6 header generation (version 6, not 8)
-5. Implement index building (NCX, INDX records)
-6. Implement PDB file writing
-7. Write unit tests for each component
+3. Integrate with shared `process_image()` from `src/image/convert.rs`
+4. Implement text record building with PalmDoc compression
+5. Implement MOBI 6 header generation (version 6, not 8)
+6. Implement PalmDB header writing (78-byte header + record info list)
+7. Implement index building (NCX, INDX records)
+8. Implement EXTH metadata writing
+9. Write unit tests for each component
 
-### Phase 5: Integration & Testing
+### Phase 4: Integration & Testing
 1. Add integration tests (EPUB → MOBI 6)
 2. Add test fixtures (simple, with images, complex)
 3. Add comparison tests (MOBI 6 vs AZW3 output)
 4. Test with real books from `tests/fixtures/`
 5. Update documentation (quick-reference, contributing)
 6. Verify warning collection works correctly
+7. Verify shared image module works independently
 
 ## Open Questions
 
