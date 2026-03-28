@@ -195,6 +195,60 @@ impl MobiBuilder {
         title
     }
 
+    /// Process images from book assets
+    fn process_images(&mut self, book: &mut Book) -> io::Result<()> {
+        // Collect image paths first to avoid borrow checker issues
+        let image_paths: Vec<_> = book.list_assets().to_vec();
+
+        for image_path in image_paths {
+            // Load image data using Book::load_asset()
+            let image_data = match book.load_asset(&image_path) {
+                Ok(data) => data,
+                Err(e) => {
+                    self.warnings.push(format!(
+                        "Failed to load image {:?}: {}",
+                        image_path, e
+                    ));
+                    continue; // Skip this image
+                }
+            };
+
+            // Process with shared image module
+            use crate::image::convert::{ImageConfig, ImageFormat, process_image};
+
+            let config = ImageConfig {
+                max_dimensions: self.config.max_image_size,
+                max_file_size: self.config.max_image_file_size,
+                output_format: ImageFormat::Auto,
+                jpeg_quality: 85,
+                png_compression: 6,
+            };
+
+            match process_image(&image_data, &config) {
+                Ok((data, warn)) => {
+                    self.warnings.extend(warn);
+                    if !data.is_empty() {
+                        // Store processed image
+                        let record_index = self.image_records.len() as u32;
+                        self.image_records.push(data);
+
+                        // Map path -> record index for HTML filtering
+                        let path_str = image_path.to_string_lossy().to_string();
+                        self.image_path_to_record.insert(path_str, record_index);
+                    }
+                }
+                Err(e) => {
+                    self.warnings.push(format!(
+                        "Failed to process image {:?}: {}",
+                        image_path, e
+                    ));
+                }
+            };
+        }
+
+        Ok(())
+    }
+
     /// Write the complete PDB file
     fn write<W: Write + Seek>(&self, _writer: &mut W) -> io::Result<()> {
         // TODO: Implement in subsequent tasks
