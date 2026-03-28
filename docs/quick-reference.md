@@ -348,6 +348,22 @@ let exporter = KfxExporter::new();
 exporter.export(&mut book, &mut output)?;
 ```
 
+### MOBI Exporter
+
+```rust
+use boko::export::{MobiExporter, MobiConfig, MobiEncoding};
+
+let exporter = MobiExporter::new()
+    .with_config(MobiConfig {
+        collect_warnings: true,
+        max_image_size: (2048, 2048),
+        max_image_file_size: 10 * 1024 * 1024,
+        encoding: MobiEncoding::Utf8,
+    });
+
+exporter.export(&mut book, &mut output)?;
+```
+
 ### Markdown Exporter
 
 ```rust
