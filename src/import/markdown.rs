@@ -215,7 +215,31 @@ impl MarkdownImporter {
                     if let Some((_, parent_path)) = toc_stack.last() {
                         // Copy parent path and add child index
                         entry_path = parent_path.clone();
-                        let parent = get_toc_entry_at_path(&mut self.toc, &entry_path);
+
+                        // Get parent entry by traversing path
+                        let parent = if let Some(&index) = entry_path.first() {
+                            if let Some(entry) = self.toc.get_mut(index) {
+                                if entry_path.len() == 1 {
+                                    Some(entry)
+                                } else {
+                                    // Nested entry - traverse children
+                                    let mut current = Some(entry);
+                                    for &child_index in &entry_path[1..] {
+                                        if let Some(entry) = current {
+                                            current = entry.children.get_mut(child_index);
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    current
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
                         if let Some(parent) = parent {
                             entry_path.push(parent.children.len());
                             parent.children.push(entry);
