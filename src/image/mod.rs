@@ -11,4 +11,4 @@
 
 pub mod convert;
 
-pub use convert::{ImageConfig, ImageFormat, detect_format, is_supported_format};
+pub use convert::{ImageConfig, ImageFormat, process_image, detect_format, is_supported_format};
