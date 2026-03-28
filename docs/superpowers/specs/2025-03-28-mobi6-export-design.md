@@ -117,6 +117,107 @@ MobiBuilder::write()
     └─ Write PDB file with records
 ```
 
+## MOBI 6 File Format Structure
+
+MOBI 6 files are PalmDB databases with a specific record layout. Understanding this structure is critical for implementation.
+
+### Record Layout
+
+```
+Record 0: PalmDB + MOBI Header (merged)
+├── PalmDB header (78 bytes)
+│   ├── Database name: "BOOKMOBI"
+│   ├── File type: "MOBI"
+│   ├── Creator: "MOBI"
+│   └── Number of records
+└── MOBI header (variable, ~232+ bytes)
+    ├── Compression type: 2 (PalmDoc)
+    ├── MOBI version: 6 (NOT 8!)
+    ├── Text record count
+    ├── Text record size: 4096
+    ├── Encoding: 65001 (UTF-8) or 1252 (CP1252)
+    ├── First image index
+    └── EXTH header flag
+
+Record 1 to N: Text Records
+├── PalmDoc compressed HTML content
+├── Split into 4KB (4096 byte) chunks
+└── Last record may be smaller
+
+Record N+1 to M: Image Records
+├── Raw image data (PNG/JPEG/GIF)
+├── One record per image
+└── Order matches first_image_index
+
+Record M+1: EXTH Header (if exth_flags set)
+├── Author
+├── Title
+├── Publisher
+└── Other metadata
+
+Record M+2+: Index Records (optional but recommended)
+├── NCX index: Table of contents
+└── INDX records: Navigation structures
+```
+
+### Key Header Fields
+
+**MOBI Header (offsets from Record 0 start):**
+- `0x00-0x01`: Compression type (2 = PalmDoc)
+- `0x08-0x09`: Text record count
+- `0x0A-0x0B`: Text record size (4096)
+- `0x14-0x17`: MOBI header length
+- `0x18-0x1B`: MOBI type (2 = standard book)
+- `0x1C-0x1F`: Codepage (65001 = UTF-8, 1252 = CP1252)
+- `0x68-0x6B`: MOBI version (6 for MOBI 6, 8 for KF8/AZW3)
+- `0x6C-0x6F`: First image index
+
+**EXTH Header (if present):**
+- Starts with "EXTH" magic
+- Contains header length, record count
+- Metadata records: author, title, publisher, etc.
+
+### Image Reference Format
+
+**Critical difference between MOBI 6 and AZW3:**
+
+- **MOBI 6**: Uses `<img recindex="N"/>` format where N is the record number
+  ```html
+  <img recindex="0"/> refers to first image record
+  <img recindex="5"/> refers to sixth image record
+  ```
+
+- **AZW3/KF8**: Uses `<img src="kindle:embed:XXXX?mime=image/jpeg"/>` format
+
+**Implementation requirement:**
+```rust
+// Must convert standard HTML <img src="path/to/image.jpg">
+// to MOBI 6 format <img recindex="3"/>
+// where 3 is the record number containing that image
+```
+
+### Character Encoding
+
+**Default strategy:**
+- Use UTF-8 encoding (codepage 65001) for modern devices
+- Optional CP1252 (codepage 1252) for legacy devices
+- Transcode if needed: UTF-8 → CP1252, replace unsupported chars with '?'
+
+**Implementation:**
+```rust
+pub enum MobiEncoding {
+    Utf8,      // Default - modern Kindles
+    Cp1252,    // Legacy - very old devices
+}
+
+pub struct MobiConfig {
+    pub collect_warnings: bool,
+    pub max_image_size: (u32, u32),
+    pub max_image_file_size: u64,
+    pub encoding: MobiEncoding,  // Add this
+}
+```
+
 ## Components
 
 ### 1. MobiExporter
@@ -130,6 +231,25 @@ pub struct MobiExporter {
 
 pub struct MobiConfig {
     pub collect_warnings: bool,
+    pub max_image_size: (u32, u32),      // (width, height) - default (2048, 2048)
+    pub max_image_file_size: u64,         // bytes - default 10MB
+    pub encoding: MobiEncoding,           // default Utf8
+}
+
+pub enum MobiEncoding {
+    Utf8,      // Modern Kindles - recommended
+    Cp1252,    // Legacy devices - transcoded from UTF-8
+}
+
+impl Default for MobiConfig {
+    fn default() -> Self {
+        Self {
+            collect_warnings: true,
+            max_image_size: (2048, 2048),
+            max_image_file_size: 10 * 1024 * 1024,  // 10MB
+            encoding: MobiEncoding::Utf8,
+        }
+    }
 }
 
 impl Exporter for MobiExporter {
@@ -169,6 +289,45 @@ Internal builder that constructs the MOBI file.
 
 Filters HTML content to only include MOBI 6 supported tags.
 
+**Implementation Approach:**
+
+Use `html5ever` (already a dependency) for DOM-based filtering:
+
+```rust
+use html5ever::{parse_document, ParseOpts};
+use html5ever::tree_builder::TreeBuilder;
+use html5ever::rcdom::{RcDom, Handle};
+
+pub fn filter_html_for_mobi6(html: &str) -> (String, Vec<String>) {
+    // 1. Parse HTML with html5ever (robust, handles malformed HTML)
+    let dom = parse_document(RcDom::new(), ParseOpts::default())
+        .from_utf8()
+        .read_from(&mut html.as_bytes())
+        .unwrap();
+
+    // 2. Walk DOM tree recursively
+    // 3. For each node:
+    //    - If unsupported tag: remove or replace with closest equivalent
+    //    - If style attribute: strip or convert to basic formatting
+    //    - If class/id: remove (not useful in MOBI 6)
+    // 4. Serialize back to HTML
+
+    let filtered = serialize_filtered_dom(dom.document);
+    let warnings = collect_warnings();
+
+    (filtered, warnings)
+}
+
+fn convert_css_to_basic_tag(css_property: &str, css_value: &str) -> Option<&'static str> {
+    match (css_property, css_value) {
+        ("font-style", "italic") => Some("i"),
+        ("font-weight", "bold") => Some("b"),
+        ("text-decoration", "underline") => Some("u"),
+        _ => None,
+    }
+}
+```
+
 **Supported Tags:**
 - Headings: `<h1>` through `<h6>`
 - Paragraphs: `<p>`
@@ -176,13 +335,15 @@ Filters HTML content to only include MOBI 6 supported tags.
 - Basic formatting: `<i>`, `<b>`, `<u>`
 - Lists: `<ul>`, `<ol>`, `<li>`
 - Tables: `<table>`, `<tr>`, `<td>`, `<th>`
-- Images: `<img>` (with proper record references)
-- Divs/spans (limited support)
+- Images: `<img>` (converted to `recindex` format later)
+- Divs/spans (limited support - stripped if no attributes)
 
 **Removed/Transformed:**
-- CSS styles → stripped or simplified to basic attributes
+- CSS styles → parsed, converted to basic tags if possible, otherwise stripped
+- Style attributes → removed (MOBI 6 doesn't support inline styles)
+- Class/id attributes → removed
 - Fonts → removed, use device fonts
-- Colored text → converted to black
+- Colored text → stripped (color info lost)
 - Complex layouts → flattened
 - Unsupported tags → removed or replaced with simpler alternatives
 
@@ -323,15 +484,23 @@ Add to `Cargo.toml`:
 ```toml
 [dependencies]
 # Image processing (for format conversion and downsampling)
-image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png"] }
+# Using 0.24 for stability (0.25 is very new)
+image = { version = "0.24", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 ```
 
-Note: `gif` feature is included for decoding existing GIF images. We prefer PNG/JPEG for output and only convert to GIF if required by target device.
+**Feature explanation:**
+- `gif`: For decoding existing GIF images in source books
+- `jpeg`: For JPEG encoding/decoding (preferred format)
+- `png`: For PNG encoding/decoding (preferred format)
+- `webp`: For WebP decoding (convert to JPEG/PNG)
+
+Note: We prefer PNG/JPEG for output. GIF feature is only for decoding existing images. WebP images are converted to JPEG/PNG.
 
 ### Reused Dependencies
 
 - `flate2` - Already used for PalmDoc compression
 - `html5ever` - Already used for HTML parsing in `src/export/html_synth.rs`
+- `encoding_rs` - Already used for character encoding conversion
 - Existing `mobi/` module utilities (`palmdoc.rs`, `headers.rs`, `index.rs`)
 
 ## Testing Strategy
