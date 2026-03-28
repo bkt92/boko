@@ -542,10 +542,11 @@ impl Book {
             Format::Azw3 => Azw3Exporter::new().export(self, writer),
             Format::Markdown => MarkdownExporter::new().export(self, writer),
             Format::Kfx => KfxExporter::new().export(self, writer),
-            Format::Mobi => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("{:?} export is not supported", format),
-            )),
+            Format::Mobi => {
+                use crate::export::Exporter;
+                let exporter = crate::export::MobiExporter::new();
+                exporter.export(self, writer)
+            }
         }
     }
 }
