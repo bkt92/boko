@@ -124,58 +124,122 @@ MOBI 6 files are PalmDB databases with a specific record layout. Understanding t
 ### Record Layout
 
 ```
-Record 0: PalmDB + MOBI Header (merged)
-├── PalmDB header (78 bytes)
-│   ├── Database name: "BOOKMOBI"
-│   ├── File type: "MOBI"
-│   ├── Creator: "MOBI"
-│   └── Number of records
-└── MOBI header (variable, ~232+ bytes)
-    ├── Compression type: 2 (PalmDoc)
-    ├── MOBI version: 6 (NOT 8!)
-    ├── Text record count
-    ├── Text record size: 4096
-    ├── Encoding: 65001 (UTF-8) or 1252 (CP1252)
-    ├── First image index
-    └── EXTH header flag
-
-Record 1 to N: Text Records
-├── PalmDoc compressed HTML content
-├── Split into 4KB (4096 byte) chunks
-└── Last record may be smaller
-
-Record N+1 to M: Image Records
-├── Raw image data (PNG/JPEG/GIF)
-├── One record per image
-└── Order matches first_image_index
-
-Record M+1: EXTH Header (if exth_flags set)
-├── Author
-├── Title
-├── Publisher
-└── Other metadata
-
-Record M+2+: Index Records (optional but recommended)
-├── NCX index: Table of contents
-└── INDX records: Navigation structures
+File Structure:
+┌─────────────────────────────────────┐
+│ PalmDB Header (78 bytes)            │
+├─────────────────────────────────────┤
+│ Record Info List (8 bytes × N)      │  ← N = number of records
+├─────────────────────────────────────┤
+│ Gap (2 bytes)                       │
+├─────────────────────────────────────┤
+│ Record 0: MOBI Header + EXTH        │
+├─────────────────────────────────────┤
+│ Record 1: Text data (compressed)    │
+├─────────────────────────────────────┤
+│ Record 2: Text data (compressed)    │
+├─────────────────────────────────────┤
+│ ...                                 │
+├─────────────────────────────────────┤
+│ Record N-1: Last text record        │
+├─────────────────────────────────────┤
+│ Record N: First image               │  ← Images start here
+├─────────────────────────────────────┤
+│ Record N+1: Second image            │
+├─────────────────────────────────────┤
+│ ...                                 │
+└─────────────────────────────────────┘
 ```
 
-### Key Header Fields
+### PalmDB Header Structure (First 78 bytes)
 
-**MOBI Header (offsets from Record 0 start):**
-- `0x00-0x01`: Compression type (2 = PalmDoc)
-- `0x08-0x09`: Text record count
-- `0x0A-0x0B`: Text record size (4096)
-- `0x14-0x17`: MOBI header length
-- `0x18-0x1B`: MOBI type (2 = standard book)
-- `0x1C-0x1F`: Codepage (65001 = UTF-8, 1252 = CP1252)
-- `0x68-0x6B`: MOBI version (6 for MOBI 6, 8 for KF8/AZW3)
-- `0x6C-0x6F`: First image index
+```
+Offset  Size    Field                  Value
+─────────────────────────────────────────────────────────
+0x00    32      Database name          Book title (padded)
+0x20    2       Attributes             0x0000
+0x22    2       Version                0x0000
+0x24    4       Creation time          Unix timestamp
+0x28    4       Modification time      Unix timestamp
+0x2C    4       Last backup time       0x00000000
+0x30    4       Modification number    0x00000000
+0x34    4       App info ID            0x00000000
+0x38    4       Sort info ID           0x00000000
+0x3C    4       Database type          "MOBI\0"
+0x40    4       Creator                "MOBI\0"
+0x44    4       Unique ID seed         (2 × num_records) - 1
+0x48    4       Next record list       0x00000000
+0x4C    2       Number of records     Record count
+```
 
-**EXTH Header (if present):**
-- Starts with "EXTH" magic
-- Contains header length, record count
-- Metadata records: author, title, publisher, etc.
+### Record Info List Format
+
+Each record has an 8-byte entry immediately after the PalmDB header:
+
+```
+Offset  Size    Field                  Description
+─────────────────────────────────────────────────────────
+0x00    4       Record data offset     Offset from file start
+0x04    1       Attributes             0x00 (normal)
+0x05    1       Unique ID (bits 0-2)   Record ID (2 × record_index)
+0x06    2       Unique ID (bits 3-18)  0x0000
+```
+
+### MOBI Header Structure (Record 0, after PalmDB)
+
+```
+Offset  Size    Field                  Value (MOBI 6)
+─────────────────────────────────────────────────────────
+0x00    2       Compression            2 (PalmDoc)
+0x02    2       Reserved               0x0000
+0x04    4       Text length            Total uncompressed size
+0x08    2       Text record count      Number of text records
+0x0A    2       Text record size       4096 (4KB)
+0x0C    2       Encryption             0 (none)
+0x0E    2       Reserved               0x0000
+0x10    4       Unknown                0x00000000
+─────────────────────────────────────────────────────────
+0x14    4       MOBI header length     Header size in bytes
+0x18    4       MOBI type              2 (standard book)
+0x1C    4       Codepage               65001 (UTF-8) or 1252 (CP1252)
+0x20    4       Unknown                0x00000000
+0x24    4       Unknown                0x00000000
+─────────────────────────────────────────────────────────
+0x54    4       Title offset           Offset to title string
+0x58    4       Title length           Length of title string
+─────────────────────────────────────────────────────────
+0x5C    4       Language               Language code (e.g., 0x09 for English)
+0x60    4       Unknown                0x00000000
+0x64    4       Unknown                0x00000000
+─────────────────────────────────────────────────────────
+0x68    4       MOBI version           6 (NOT 8!)
+0x6C    4       First image index     Record number of first image
+0x70    4       Unknown                0x00000000
+─────────────────────────────────────────────────────────
+0x80    4       EXTH flags             Bitmask: 0x40 = EXTH present
+```
+
+### EXTH Header (if exth_flags bit 0x40 is set)
+
+```
+Offset  Size    Field                  Description
+─────────────────────────────────────────────────────────
+0x00    4       Magic                  "EXTH"
+0x04    4       Header length          Total length including records
+0x08    4       Record count           Number of metadata records
+─────────────────────────────────────────────────────────
+Records (variable):
+  0x00  4       Record type            Author (100), Title (106), etc.
+  0x04  4       Record length          Length of record data
+  0x08  N       Record data            UTF-8 string data
+```
+
+**Common EXTH record types:**
+- 100: Author
+- 101: Publisher
+- 106: Title
+- 108: Description
+- 109: ISBN
+- 503: Published date
 
 ### Image Reference Format
 
@@ -189,12 +253,139 @@ Record M+2+: Index Records (optional but recommended)
 
 - **AZW3/KF8**: Uses `<img src="kindle:embed:XXXX?mime=image/jpeg"/>` format
 
-**Implementation requirement:**
+**Implementation Strategy:**
+
+Image reference conversion happens in two phases:
+
 ```rust
-// Must convert standard HTML <img src="path/to/image.jpg">
-// to MOBI 6 format <img recindex="3"/>
-// where 3 is the record number containing that image
+impl MobiBuilder {
+    // Phase 1: Collect and process images (during MobiBuilder::new())
+    fn process_images(&mut self, book: &mut Book) -> io::Result<()> {
+        self.image_path_to_record = HashMap::new();
+
+        for (image_path, image_data) in book.list_assets() {
+            // Process image (downscale, convert format)
+            let (processed, warnings) = process_image(
+                &image_data,
+                self.config.max_image_size,
+            )?;
+
+            self.warnings.extend(warnings);
+
+            // Store in image records
+            let record_index = self.image_records.len() as u32;
+            self.image_records.push(processed);
+
+            // Build mapping: original path → record index
+            self.image_path_to_record.insert(image_path, record_index);
+        }
+
+        Ok(())
+    }
+
+    // Phase 2: Rewrite HTML with recindex references (during filter_html())
+    fn filter_html(&mut self, html: &str) -> String {
+        let (filtered, warnings) = filter_html_for_mobi6(
+            html,
+            &self.image_path_to_record,  // Pass mapping
+        );
+
+        self.warnings.extend(warnings);
+        filtered
+    }
+}
+
+// In html_filter.rs:
+pub fn filter_html_for_mobi6(
+    html: &str,
+    image_map: &HashMap<String, u32>,  // path → record_index
+) -> (String, Vec<String>) {
+    // Parse HTML
+    let dom = parse_document(RcDom::new(), ParseOpts::default())
+        .from_utf8()
+        .read_from(&mut html.as_bytes())
+        .unwrap();
+
+    // Walk DOM, replace <img src="path"> with <img recindex="N">
+    walk_and_replace_images(dom.document, image_map);
+
+    // Serialize back to HTML
+    (serialize_dom(dom.document), warnings)
+}
 ```
+
+**Error handling:**
+- If image processing fails: Return warning, skip image (don't add to image_records)
+- If image path not found in mapping: Skip that `<img>` tag (no image reference)
+- If image record index overflows u32: Fail with error (too many images)
+
+### Index Structures (MOBI 6)
+
+MOBI 6 uses simpler indexes than KF8. The main index is the NCX (navigation control) index.
+
+**NCX Index Format:**
+
+The NCX index is stored in an INDX record with type 0. Structure:
+
+```rust
+/// NCX entry for table of contents
+pub struct NcxEntry {
+    pub name: String,           // Chapter title
+    pub offset: u32,            // File offset in text records
+    pub size: u32,              // Chapter size in bytes
+    pub level: u8,              // Nesting level (0 = top-level)
+    pub children: Vec<NcxEntry>, // Sub-chapters
+}
+
+/// Build NCX index from TOC
+fn build_ncx_index(
+    toc: &[TocEntry],
+    text_offsets: &[u32],  // Start offset of each text record
+) -> io::Result<Vec<u8>> {
+    let mut entries = Vec::new();
+
+    for entry in toc {
+        let offset = text_offsets[entry.chapter_id.0];
+        entries.push(NcxEntry {
+            name: entry.title.clone(),
+            offset,
+            size: entry.size_estimate as u32,
+            level: entry.depth as u8,
+            children: Vec::new(),  // Simplified: flat structure
+        });
+    }
+
+    // Serialize to INDX format
+    serialize_ncx_indx(entries)
+}
+```
+
+**INDX Record Structure:**
+
+```
+Offset  Size    Field                  Description
+─────────────────────────────────────────────────────────
+0x00    4       Magic                  "INDX"
+0x04    4       Header length          0x000000C0 (192 bytes)
+0x08    4       Unknown                0x00000000
+─────────────────────────────────────────────────────────
+0x14    4       IDXT start             Offset to index entries
+0x18    4       Entry count            Number of NCX entries
+0x1C    4       Encoding               65001 (UTF-8)
+─────────────────────────────────────────────────────────
+0x20    4       Unknown                0x00000000
+0x24    4       Total entries          Entry count
+─────────────────────────────────────────────────────────
+0xB4    4       TAGX offset            Offset to TAGX section
+─────────────────────────────────────────────────────────
+IDXT section: Array of (offset, size) pairs
+TAGX section: Tag definition array
+```
+
+**For MOBI 6 export**, we can simplify by:
+1. Creating a flat NCX (no nested children)
+2. Using file offsets instead of skeleton/div references
+3. Omitting SKEL/FRAG indexes (KF8-only features)
 
 ### Character Encoding
 
@@ -291,29 +482,35 @@ Filters HTML content to only include MOBI 6 supported tags.
 
 **Implementation Approach:**
 
-Use `html5ever` (already a dependency) for DOM-based filtering:
+Use `html5ever` (already a dependency at version 0.39) for DOM-based filtering:
 
 ```rust
-use html5ever::{parse_document, ParseOpts};
-use html5ever::tree_builder::TreeBuilder;
-use html5ever::rcdom::{RcDom, Handle};
+use html5ever::parse_document;
+use html5ever::driver::ParseOpts;
+use html5ever::tendril::TendrilSink;
+use crate::dom::tree_sink::ArenaSink;
 
-pub fn filter_html_for_mobi6(html: &str) -> (String, Vec<String>) {
+pub fn filter_html_for_mobi6(
+    html: &str,
+    image_map: &HashMap<String, u32>,
+) -> (String, Vec<String>) {
     // 1. Parse HTML with html5ever (robust, handles malformed HTML)
-    let dom = parse_document(RcDom::new(), ParseOpts::default())
+    let sink = ArenaSink::new();
+    let dom = parse_document(sink, ParseOpts::default())
         .from_utf8()
-        .read_from(&mut html.as_bytes())
-        .unwrap();
+        .one(html.as_bytes())
+        .into_dom();
 
     // 2. Walk DOM tree recursively
     // 3. For each node:
     //    - If unsupported tag: remove or replace with closest equivalent
     //    - If style attribute: strip or convert to basic formatting
     //    - If class/id: remove (not useful in MOBI 6)
+    //    - If <img src="path">: replace with <img recindex="N"/>
     // 4. Serialize back to HTML
 
-    let filtered = serialize_filtered_dom(dom.document);
-    let warnings = collect_warnings();
+    let filtered = serialize_filtered_dom(&dom, image_map);
+    let warnings = collect_warnings(&dom);
 
     (filtered, warnings)
 }
@@ -484,8 +681,7 @@ Add to `Cargo.toml`:
 ```toml
 [dependencies]
 # Image processing (for format conversion and downsampling)
-# Using 0.24 for stability (0.25 is very new)
-image = { version = "0.24", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 ```
 
 **Feature explanation:**
@@ -499,7 +695,7 @@ Note: We prefer PNG/JPEG for output. GIF feature is only for decoding existing i
 ### Reused Dependencies
 
 - `flate2` - Already used for PalmDoc compression
-- `html5ever` - Already used for HTML parsing in `src/export/html_synth.rs`
+- `html5ever` (0.39) - Already used for HTML parsing in `src/export/html_synth.rs`
 - `encoding_rs` - Already used for character encoding conversion
 - Existing `mobi/` module utilities (`palmdoc.rs`, `headers.rs`, `index.rs`)
 
