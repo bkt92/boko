@@ -249,6 +249,32 @@ impl MobiBuilder {
         Ok(())
     }
 
+    /// Build compressed text records from HTML content
+    fn build_text_records(&mut self, html_content: &str) -> io::Result<()> {
+        use crate::mobi::palmdoc;
+
+        // Compress the HTML content
+        let compressed = palmdoc::compress(html_content.as_bytes());
+
+        // Split into 4KB records
+        const RECORD_SIZE: usize = 4096;
+        let mut offset = 0;
+
+        while offset < compressed.len() {
+            let end = (offset + RECORD_SIZE).min(compressed.len());
+            let record_data = compressed[offset..end].to_vec();
+            self.text_records.push(record_data);
+            offset = end;
+        }
+
+        // Add at least one record even if empty
+        if self.text_records.is_empty() {
+            self.text_records.push(Vec::new());
+        }
+
+        Ok(())
+    }
+
     /// Write the complete PDB file
     fn write<W: Write + Seek>(&self, _writer: &mut W) -> io::Result<()> {
         // TODO: Implement in subsequent tasks
