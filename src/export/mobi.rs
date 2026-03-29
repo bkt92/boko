@@ -125,6 +125,7 @@ pub struct MobiResult {
 }
 
 /// Internal builder for MOBI 6 file creation
+#[allow(dead_code)] // TODO: Remove once MOBI export is fully implemented
 struct MobiBuilder {
     /// Compressed text records (4KB each)
     text_records: Vec<Vec<u8>>,
@@ -222,6 +223,7 @@ impl MobiBuilder {
     }
 
     /// Process images from book assets
+    #[allow(dead_code)] // TODO: Wire up in export() once implementation is complete
     fn process_images(&mut self, book: &mut Book) -> io::Result<()> {
         // Collect image paths first to avoid borrow checker issues
         let image_paths: Vec<_> = book.list_assets().to_vec();
@@ -408,6 +410,7 @@ impl MobiBuilder {
     }
 
     /// Build NCX index from TOC entries
+    #[allow(dead_code)] // TODO: Wire up in export() once implementation is complete
     fn build_ncx_index(&self) -> io::Result<Vec<u8>> {
         // For Phase 3, create simplified INDX record
         let mut indx = Vec::new();

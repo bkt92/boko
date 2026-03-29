@@ -1,5 +1,5 @@
-use boko::{Book, Importer};
 use boko::import::MarkdownImporter;
+use boko::{Book, Importer};
 use std::path::Path;
 
 #[test]
@@ -12,7 +12,10 @@ fn test_open_markdown_file() {
 
     // Test the importer directly first
     let result = MarkdownImporter::open(path);
-    assert!(result.is_ok(), "Failed to open markdown file with MarkdownImporter");
+    assert!(
+        result.is_ok(),
+        "Failed to open markdown file with MarkdownImporter"
+    );
 
     let importer = result.unwrap();
     assert!(!importer.metadata().title.is_empty());

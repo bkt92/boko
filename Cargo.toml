@@ -76,7 +76,8 @@ proptest = "1.6"
 criterion = "0.8"
 
 [[bin]]
-name = "boko"
+name = "bokocli"
+path = "src/main.rs"
 required-features = ["cli"]
 
 [[bin]]

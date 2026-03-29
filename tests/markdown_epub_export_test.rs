@@ -21,13 +21,20 @@ fn test_markdown_to_epub_export() {
 
     // Verify output is a valid ZIP (EPUB is a ZIP)
     let epub_bytes = output.into_inner();
-    let zip = ZipArchive::new(std::io::Cursor::new(epub_bytes))
-        .expect("Output is not a valid ZIP/EPUB");
+    let zip =
+        ZipArchive::new(std::io::Cursor::new(epub_bytes)).expect("Output is not a valid ZIP/EPUB");
 
     // Check for required EPUB files
-    assert!(zip.file_names().any(|n| n.contains("mimetype")), "Missing mimetype");
+    assert!(
+        zip.file_names().any(|n| n.contains("mimetype")),
+        "Missing mimetype"
+    );
     assert!(zip.file_names().any(|n| n.contains(".opf")), "Missing OPF");
-    assert!(zip.file_names().any(|n| n.contains("toc.ncx") || n.contains("nav.xhtml")), "Missing TOC");
+    assert!(
+        zip.file_names()
+            .any(|n| n.contains("toc.ncx") || n.contains("nav.xhtml")),
+        "Missing TOC"
+    );
 
     println!("EPUB exported successfully with {} files", zip.len());
 }
