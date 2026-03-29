@@ -9,6 +9,9 @@ use crate::model::{Book, Metadata, TocEntry};
 
 use super::Exporter;
 
+#[allow(unused_imports)]
+use regex; // Re-exported for use in update_image_references
+
 /// Configuration for MOBI 6 export.
 #[derive(Debug, Clone)]
 pub struct MobiConfig {
@@ -85,19 +88,57 @@ impl MobiExporter {
     /// Collect HTML content from book chapters
     /// Update image references in HTML to use MOBI record indices
     fn update_image_references(&self, html: &str, builder: &MobiBuilder) -> String {
-        // For now, keep image references as-is
-        // A full implementation would convert to MOBI <img recindex="N"> format
-        // For this phase, we just pass through the HTML with original image paths
+        // Convert image paths to MOBI <img recindex="N"> format
+        // MOBI format uses record indices, not file paths
 
-        // Log the number of images processed
-        if !builder.image_path_to_record.is_empty() {
-            eprintln!(
-                "MOBI: Processed {} images (paths preserved in HTML)",
-                builder.image_path_to_record.len()
-            );
+        if builder.image_path_to_record.is_empty() {
+            return html.to_string();
         }
 
-        html.to_string()
+        // Calculate base record index for images (after text records + MOBI header)
+        let first_image_record = (builder.text_records.len() + 1) as u32;
+
+        let mut result = html.to_string();
+
+        // Replace each image reference with MOBI format
+        for (image_path, image_index) in &builder.image_path_to_record {
+            // The MOBI record index is: first_image_record + image_index
+            let mobi_record_index = first_image_record + image_index;
+
+            // Build the MOBI image tag
+            let mobi_img_tag = format!(r#"<img recindex="{}"/>"#, mobi_record_index);
+
+            // Extract just the filename for matching
+            let filename = if let Some(pos) = image_path.rfind('/') {
+                &image_path[pos + 1..]
+            } else if let Some(pos) = image_path.rfind('\\') {
+                &image_path[pos + 1..]
+            } else {
+                image_path
+            };
+
+            // Replace src="..." attributes with various formats
+            let replacements = vec![
+                format!(r#"src="{}""#, image_path.replace('\\', "/")),
+                format!(r#"src='{}'"#, image_path.replace('\\', "/")),
+                format!(r#"src="{}""#, filename),
+                format!(r#"src='{}'"#, filename),
+                format!(r#"src="../images/{}""#, filename),
+                format!(r#"src='../Images/{}""#, filename),
+                format!(r#"src="../OEBPS/Images/{}""#, filename),
+            ];
+
+            for pattern in replacements {
+                result = result.replace(&pattern, &mobi_img_tag);
+            }
+        }
+
+        eprintln!(
+            "MOBI: Updated {} image references to MOBI recindex format",
+            builder.image_path_to_record.len()
+        );
+
+        result
     }
 
     fn collect_html_content(&self, book: &mut Book) -> io::Result<String> {

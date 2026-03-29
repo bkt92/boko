@@ -44,6 +44,9 @@ base64 = "0.22"
 # Image processing for format conversion and optimization
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 
+# Regular expressions for HTML processing
+regex = "1.11"
+
 # Markdown parsing
 pulldown-cmark = "0.12"
 
