@@ -58,15 +58,8 @@ pub fn time_now_secs() -> u32 {
 ///
 /// # Examples
 ///
-/// ```ignore
-/// // Valid UTF-8
-/// let utf8_bytes = "Hello, World!".as_bytes();
-/// assert_eq!(decode_text(utf8_bytes, None), "Hello, World!");
+/// See `test_decode_text()` for usage examples.
 ///
-/// // With encoding hint (e.g., from XML declaration)
-/// let bytes = b"Hello";
-/// assert_eq!(decode_text(bytes, Some("utf-8")), "Hello");
-/// ```
 pub fn decode_text<'a>(bytes: &'a [u8], hint_encoding: Option<&str>) -> Cow<'a, str> {
     // Try UTF-8 first (handles BOM automatically)
     let (result, _encoding, malformed) = encoding_rs::UTF_8.decode(bytes);
@@ -99,12 +92,8 @@ pub fn decode_text<'a>(bytes: &'a [u8], hint_encoding: Option<&str>) -> Cow<'a, 
 ///
 /// # Examples
 ///
-/// ```ignore
-/// let png_data = include_bytes!("../tests/fixtures/image.png");
-/// if let Some((w, h)) = extract_image_dimensions(png_data) {
-///     println!("Image is {}x{}", w, h);
-/// }
-/// ```
+/// See `test_extract_image_dimensions()` for usage examples.
+///
 pub fn extract_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     if data.len() < 24 {
         return None;
@@ -347,10 +336,8 @@ pub fn detect_mime_type(filename: &str, data: &[u8]) -> Option<&'static str> {
 ///
 /// # Examples
 ///
-/// ```ignore
-/// assert_eq!(truncate_to_date("2022-05-26T16:26:51Z"), "2022-05-26");
-/// assert_eq!(truncate_to_date("2022-05-26"), "2022-05-26");
-/// ```
+/// See `test_truncate_to_date()` for usage examples.
+///
 pub fn truncate_to_date(s: &str) -> String {
     if let Some(t_pos) = s.find('T') {
         s[..t_pos].to_string()
