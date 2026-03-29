@@ -214,11 +214,9 @@ impl MobiBuilder {
         // Sort info ID (4 bytes)
         header.extend_from_slice(&0u32.to_be_bytes());
 
-        // Database type (4 bytes)
-        header.extend_from_slice(b"MOBI\0");
-
-        // Creator (4 bytes)
-        header.extend_from_slice(b"MOBI\0");
+        // Database type (4 bytes) + Creator (4 bytes) = 8 bytes
+        // Should be "BOOKMOBI" for MOBI files
+        header.extend_from_slice(b"BOOKMOBI");
 
         // Unique ID seed (4 bytes)
         let seed = (2 * num_records) as u32 - 1;
@@ -482,8 +480,8 @@ impl MobiBuilder {
 
         // Write record info list (8 bytes per record)
         for (i, &record_offset) in offsets.iter().enumerate() {
-            // Offset (4 bytes)
-            writer.write_all(&record_offset.to_be_bytes())?;
+            // Offset (4 bytes) - must be u32 for PalmDB format
+            writer.write_all(&(record_offset as u32).to_be_bytes())?;
 
             // Attributes (1 byte)
             writer.write_all(&[0x00])?;
