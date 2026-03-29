@@ -291,17 +291,22 @@ impl MobiBuilder {
     fn build_text_records(&mut self, html_content: &str) -> io::Result<()> {
         use crate::mobi::palmdoc;
 
-        // Compress the HTML content
-        let compressed = palmdoc::compress(html_content.as_bytes());
-
-        // Split into 4KB records
+        // Split HTML into chunks, then compress each chunk independently
+        // This ensures PalmDoc back-references don't span record boundaries
         const RECORD_SIZE: usize = 4096;
-        let mut offset = 0;
 
-        while offset < compressed.len() {
-            let end = (offset + RECORD_SIZE).min(compressed.len());
-            let record_data = compressed[offset..end].to_vec();
-            self.text_records.push(record_data);
+        // Split HTML into chunks and compress each one
+        let mut offset = 0;
+        let html_bytes = html_content.as_bytes();
+
+        while offset < html_bytes.len() {
+            let end = (offset + RECORD_SIZE).min(html_bytes.len());
+            let chunk = &html_bytes[offset..end];
+
+            // Compress this chunk
+            let compressed = palmdoc::compress(chunk);
+            self.text_records.push(compressed);
+
             offset = end;
         }
 
