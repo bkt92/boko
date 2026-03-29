@@ -132,6 +132,7 @@ Helper functions in `import/mod.rs` and `dom/mod.rs` handle relative path resolu
 - **MOBI**: Read-only legacy format. The MOBI parser handles the PalmDOC database format, HUFF/CDIC compression, and index structures.
 - **KFX**: Full read/write support with metadata fidelity. The KFX format is complex due to its use of Ion binary serialization and separate content/metadata containers.
 - **EPUB**: Full EPUB2/EPUB3 support with extended metadata (contributors, collections, refinements).
+- **Markdown**: Full import support with chapter splitting on H1 headings, inline formatting, images, and TOC generation.
 - **WASM**: The library can compile to WebAssembly via the `wasm` feature flag.
 
 ## Testing

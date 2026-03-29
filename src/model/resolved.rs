@@ -18,21 +18,14 @@ use crate::model::{AnchorTarget, Chapter, GlobalNodeId, Role};
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// let mut book = Book::open("input.epub")?;
 /// let resolved = book.resolve_links()?;
 ///
-/// // Forward lookup
-/// let link_node = GlobalNodeId::new(ChapterId(0), NodeId(5));
-/// if let Some(target) = resolved.get(link_node) {
-///     println!("Link points to {:?}", target);
-/// }
-///
-/// // Reverse lookup
-/// let target_node = GlobalNodeId::new(ChapterId(1), NodeId(23));
-/// if resolved.is_internal_target(target_node) {
-///     println!("Node is targeted by {} links", resolved.links_to(target_node).len());
-/// }
+/// // Query the results:
+/// // - Forward lookup: resolved.get(link_node) returns the target
+/// // - Reverse lookup: resolved.links_to(target_node) returns all links pointing to it
+/// // - Broken links: resolved.broken_links() returns (source, href) pairs
 /// ```
 #[derive(Debug, Default)]
 pub struct ResolvedLinks {

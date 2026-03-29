@@ -8,7 +8,8 @@ A fast Rust library and CLI for converting between ebook formats.
 
 ## Features
 
-- **Multi-format support**: Read and write EPUB, KFX (Kindle Format 10), and AZW3
+- **Multi-format support**: Read and write EPUB, KFX (Kindle Format 10), AZW3, and Markdown
+- **Markdown import**: Chapter splitting on H1 headings, inline formatting, images, and automatic TOC generation
 - **Intermediate representation**: Content is compiled to a semantic IR for accurate format conversion
 - **CSS preservation**: Full CSS parsing and transformation between formats
 - **Metadata fidelity**: Extended EPUB3 metadata (contributors, series, refinements) round-trips through KFX
@@ -22,9 +23,9 @@ A fast Rust library and CLI for converting between ebook formats.
 | EPUB 2/3 | ✓ | ✓ | Full EPUB3 metadata support |
 | KFX | ✓ | ✓ | Kindle Format 10 with enhanced typography |
 | AZW3 | ✓ | ✓ | Kindle Format 8 |
-| MOBI | ✓ | - | Legacy format, read-only |
+| MOBI | ✓ | ✓ | Legacy format with image support |
 | Text | - | ✓ | Plain text export |
-| Markdown | - | ✓ | Markdown export |
+| Markdown | ✓ | ✓ | Chapter splitting on H1, inline formatting, images, TOC generation |
 
 ## Installation
 
@@ -54,6 +55,9 @@ boko convert book.epub book.kfx
 
 # EPUB to AZW3
 boko convert book.epub book.azw3
+
+# EPUB to MOBI (legacy Kindle format)
+boko convert book.epub book.mobi
 
 # KFX/AZW3/MOBI to EPUB
 boko convert book.kfx book.epub

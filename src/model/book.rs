@@ -11,7 +11,8 @@ use std::sync::{Arc, RwLock};
 
 use crate::export::{Azw3Exporter, EpubExporter, Exporter, KfxExporter, MarkdownExporter};
 use crate::import::{
-    Azw3Importer, ChapterId, EpubImporter, Importer, KfxImporter, MobiImporter, SpineEntry,
+    Azw3Importer, ChapterId, EpubImporter, Importer, KfxImporter, MarkdownImporter, MobiImporter,
+    SpineEntry,
 };
 use crate::io::MemorySource;
 use crate::model::resolved::resolve_book_links;
@@ -212,7 +213,7 @@ impl Format {
     pub fn can_import(&self) -> bool {
         matches!(
             self,
-            Format::Epub | Format::Azw3 | Format::Mobi | Format::Kfx
+            Format::Epub | Format::Azw3 | Format::Mobi | Format::Kfx | Format::Markdown
         )
     }
 
@@ -242,12 +243,7 @@ impl Book {
             Format::Azw3 => Box::new(Azw3Importer::open(path.as_ref())?),
             Format::Mobi => Box::new(MobiImporter::open(path.as_ref())?),
             Format::Kfx => Box::new(KfxImporter::open(path.as_ref())?),
-            Format::Markdown => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "Markdown format is export-only",
-                ));
-            }
+            Format::Markdown => Box::new(MarkdownImporter::open(path.as_ref())?),
         };
         Ok(Self {
             backend,
@@ -265,12 +261,7 @@ impl Book {
             Format::Azw3 => Box::new(Azw3Importer::from_source(source)?),
             Format::Mobi => Box::new(MobiImporter::from_source(source)?),
             Format::Kfx => Box::new(KfxImporter::from_source(source)?),
-            Format::Markdown => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "Markdown format is export-only",
-                ));
-            }
+            Format::Markdown => Box::new(MarkdownImporter::from_source(source)?),
         };
         Ok(Self {
             backend,
