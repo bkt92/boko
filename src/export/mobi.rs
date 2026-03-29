@@ -369,7 +369,7 @@ impl MobiBuilder {
         // Unknown (4 bytes)
         header.extend_from_slice(&0u32.to_be_bytes());
 
-        // MOBI header length (4 bytes) - will update at end
+        // MOBI header length (4 bytes) - will update at end (offset to store)
         let header_length_offset = header.len();
         header.extend_from_slice(&0u32.to_be_bytes());
 
@@ -394,12 +394,15 @@ impl MobiBuilder {
             header.push(0);
         }
 
-        // Title offset (4 bytes)
-        let title_offset = 232u32; // After header
-        header.extend_from_slice(&title_offset.to_be_bytes());
+        // Title offset (4 bytes) - offset from MOBI header start to title
+        // For now, title comes immediately after header structure
+        // We'll update this after we know the final size
+        let title_offset_offset = header.len();
+        header.extend_from_slice(&0u32.to_be_bytes());
 
         // Title length (4 bytes)
-        let title_len = self.metadata.title.len() as u32;
+        let title_bytes = self.metadata.title.as_bytes();
+        let title_len = title_bytes.len() as u32;
         header.extend_from_slice(&title_len.to_be_bytes());
 
         // Language (4 bytes) - 0x09 = English
@@ -419,11 +422,14 @@ impl MobiBuilder {
         // MOBI version (4 bytes) - 6 for MOBI 6
         header.extend_from_slice(&6u32.to_be_bytes());
 
-        // First image index (4 bytes)
+        // First image index (4 bytes) - record_count + 1 (record 0 is header)
         let first_image = if self.image_records.is_empty() {
             0xFFFFFFFF // NULL_INDEX
         } else {
-            self.text_records.len() as u32
+            // Images come after text records
+            // Record 0 = MOBI header, Records 1-N = text records
+            // So first image is at record_count + 1
+            (record_count as u32) + 1
         };
         header.extend_from_slice(&first_image.to_be_bytes());
 
@@ -438,14 +444,21 @@ impl MobiBuilder {
         // EXTH flags (4 bytes) - 0x40 = EXTH present
         header.extend_from_slice(&0x40u32.to_be_bytes());
 
-        // Update header length at stored offset
-        let header_len = header.len() as u32;
-        let len_bytes = header_len.to_be_bytes();
+        // Store header structure length (before title)
+        let header_struct_len = header.len() as u32;
+
+        // Add title
+        header.extend_from_slice(title_bytes);
+
+        // Update header length to include title
+        let total_header_len = header.len() as u32;
+        let len_bytes = total_header_len.to_be_bytes();
         header[header_length_offset..header_length_offset + 4].copy_from_slice(&len_bytes);
 
-        // Add title after header
-        let title_bytes = self.metadata.title.as_bytes();
-        header.extend_from_slice(title_bytes);
+        // Update title offset to point to after header structure
+        let title_offset = header_struct_len;
+        let offset_bytes = title_offset.to_be_bytes();
+        header[title_offset_offset..title_offset_offset + 4].copy_from_slice(&offset_bytes);
 
         header
     }
