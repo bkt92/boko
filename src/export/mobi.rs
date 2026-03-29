@@ -243,6 +243,22 @@ impl MobiBuilder {
         let image_paths: Vec<_> = book.list_assets().to_vec();
 
         for image_path in image_paths {
+            // Filter to only process actual image files
+            let path_str = image_path.to_string_lossy();
+            let is_image = path_str.ends_with(".jpg")
+                || path_str.ends_with(".jpeg")
+                || path_str.ends_with(".png")
+                || path_str.ends_with(".gif")
+                || path_str.ends_with(".svg")
+                || path_str.ends_with(".webp")
+                || path_str.ends_with(".bmp")
+                || path_str.ends_with(".tiff")
+                || path_str.ends_with(".tif");
+
+            if !is_image {
+                continue; // Skip non-image files
+            }
+
             // Load image data using Book::load_asset()
             let image_data = match book.load_asset(&image_path) {
                 Ok(data) => data,
