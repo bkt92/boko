@@ -145,6 +145,8 @@ pub struct MobiResult {
 struct MobiBuilder {
     /// Compressed text records (4KB each)
     text_records: Vec<Vec<u8>>,
+    /// Uncompressed text length (for MOBI header)
+    text_length: u32,
     /// Image records (PNG/JPEG data)
     image_records: Vec<Vec<u8>>,
     /// Image path -> record index mapping
@@ -171,6 +173,7 @@ impl MobiBuilder {
 
         Ok(Self {
             text_records: Vec::new(),
+            text_length: 0,
             image_records: Vec::new(),
             image_path_to_record: HashMap::new(),
             metadata,
@@ -306,6 +309,9 @@ impl MobiBuilder {
     /// Build compressed text records from HTML content
     fn build_text_records(&mut self, html_content: &str) -> io::Result<()> {
         use crate::mobi::palmdoc;
+
+        // Store uncompressed text length for MOBI header
+        self.text_length = html_content.len() as u32;
 
         // Split HTML into chunks, then compress each chunk independently
         // This ensures PalmDoc back-references don't span record boundaries
@@ -473,8 +479,7 @@ impl MobiBuilder {
         let pdb_header = self.build_palmdb_header(num_records as u16);
 
         // Build MOBI header (Record 0 content)
-        let text_length: u32 = self.text_records.iter().map(|r| r.len()).sum::<usize>() as u32; // Uncompressed length estimate
-        let mobi_header = self.build_mobi_header(text_length);
+        let mobi_header = self.build_mobi_header(self.text_length);
 
         // Calculate record offsets
         let mut offsets = Vec::new();
