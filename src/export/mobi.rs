@@ -85,8 +85,6 @@ impl MobiExporter {
     /// Collect HTML content from book chapters
     /// Update image references in HTML to use MOBI record indices
     fn update_image_references(&self, html: &str, builder: &MobiBuilder) -> String {
-        let mut result = html.to_string();
-
         // For now, keep image references as-is
         // A full implementation would convert to MOBI <img recindex="N"> format
         // For this phase, we just pass through the HTML with original image paths
@@ -99,7 +97,7 @@ impl MobiExporter {
             );
         }
 
-        result
+        html.to_string()
     }
 
     fn collect_html_content(&self, book: &mut Book) -> io::Result<String> {

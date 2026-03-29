@@ -159,7 +159,7 @@ impl MarkdownImporter {
         let mut toc_stack: Vec<(usize, Vec<usize>)> = Vec::new(); // (level, path to entry)
         let mut in_heading = false;
         let mut current_heading_text = String::new();
-        let mut current_heading_level = 0;
+        let mut current_heading_level;
 
         for (event, range) in parser.into_offset_iter() {
             match event {
