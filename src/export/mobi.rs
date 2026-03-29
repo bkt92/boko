@@ -214,11 +214,9 @@ impl MobiBuilder {
         // Sort info ID (4 bytes)
         header.extend_from_slice(&0u32.to_be_bytes());
 
-        // Database type (4 bytes)
-        header.extend_from_slice(b"MOBI\0");
-
-        // Creator (4 bytes)
-        header.extend_from_slice(b"MOBI\0");
+        // Database type (4 bytes) + Creator (4 bytes) = 8 bytes
+        // Should be "BOOKMOBI" for MOBI files
+        header.extend_from_slice(b"BOOKMOBI");
 
         // Unique ID seed (4 bytes)
         let seed = (2 * num_records) as u32 - 1;
