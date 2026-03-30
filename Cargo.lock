@@ -164,6 +164,7 @@ dependencies = [
  "proptest",
  "pulldown-cmark",
  "quick-xml",
+ "regex",
  "selectors",
  "serde",
  "serde_json",

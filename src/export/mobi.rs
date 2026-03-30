@@ -179,6 +179,8 @@ pub struct MobiResult {
 struct MobiBuilder {
     /// Compressed text records (4KB each)
     text_records: Vec<Vec<u8>>,
+    /// Uncompressed text length (for MOBI header)
+    text_length: u32,
     /// Image records (PNG/JPEG data)
     image_records: Vec<Vec<u8>>,
     /// Image path -> record index mapping
@@ -205,6 +207,7 @@ impl MobiBuilder {
 
         Ok(Self {
             text_records: Vec::new(),
+            text_length: 0,
             image_records: Vec::new(),
             image_path_to_record: HashMap::new(),
             metadata,
@@ -303,35 +306,17 @@ impl MobiBuilder {
                 }
             };
 
-            // Process with shared image module
-            use crate::image::convert::{ImageConfig, ImageFormat, process_image};
+            // For MOBI, preserve original image data without reprocessing
+            // This ensures compatibility with readers and prevents quality loss
+            if !image_data.is_empty() {
+                // Store original image data
+                let record_index = self.image_records.len() as u32;
+                self.image_records.push(image_data);
 
-            let config = ImageConfig {
-                max_dimensions: self.config.max_image_size,
-                max_file_size: self.config.max_image_file_size,
-                output_format: ImageFormat::Auto,
-                jpeg_quality: 85,
-                png_compression: 6,
-            };
-
-            match process_image(&image_data, &config) {
-                Ok((data, warn)) => {
-                    self.warnings.extend(warn);
-                    if !data.is_empty() {
-                        // Store processed image
-                        let record_index = self.image_records.len() as u32;
-                        self.image_records.push(data);
-
-                        // Map path -> record index for HTML filtering
-                        let path_str = image_path.to_string_lossy().to_string();
-                        self.image_path_to_record.insert(path_str, record_index);
-                    }
-                }
-                Err(e) => {
-                    self.warnings
-                        .push(format!("Failed to process image {:?}: {}", image_path, e));
-                }
-            };
+                // Map path -> record index for HTML filtering
+                let path_str = image_path.to_string_lossy().to_string();
+                self.image_path_to_record.insert(path_str, record_index);
+            }
         }
 
         Ok(())
@@ -340,6 +325,9 @@ impl MobiBuilder {
     /// Build compressed text records from HTML content
     fn build_text_records(&mut self, html_content: &str) -> io::Result<()> {
         use crate::mobi::palmdoc;
+
+        // Store uncompressed text length for MOBI header
+        self.text_length = html_content.len() as u32;
 
         // Split HTML into chunks, then compress each chunk independently
         // This ensures PalmDoc back-references don't span record boundaries
@@ -366,6 +354,81 @@ impl MobiBuilder {
         }
 
         Ok(())
+    }
+
+    /// Build EXTH metadata header
+    fn build_exth_header(&self) -> Vec<u8> {
+        let mut exth = Vec::new();
+
+        // EXTH signature
+        exth.extend_from_slice(b"EXTH");
+
+        // Header length and record count - will update later
+        let length_offset = exth.len();
+        exth.extend_from_slice(&0u32.to_be_bytes()); // placeholder
+        let count_offset = exth.len();
+        exth.extend_from_slice(&0u32.to_be_bytes()); // placeholder
+
+        let mut record_count = 0u32;
+
+        // Helper to add a record
+        let mut add_record = |record_type: u32, data: &[u8]| {
+            exth.extend_from_slice(&record_type.to_be_bytes());
+            let len = (8 + data.len()) as u32;
+            exth.extend_from_slice(&len.to_be_bytes());
+            exth.extend_from_slice(data);
+            record_count += 1;
+        };
+
+        // Record 100: Author
+        if !self.metadata.authors.is_empty() {
+            let author = self.metadata.authors.join("; ");
+            add_record(100, author.as_bytes());
+        }
+
+        // Record 101: Publisher
+        if let Some(ref publisher) = self.metadata.publisher {
+            add_record(101, publisher.as_bytes());
+        }
+
+        // Record 103: Description
+        if let Some(ref description) = self.metadata.description {
+            add_record(103, description.as_bytes());
+        }
+
+        // Record 105: Subjects (keywords)
+        if !self.metadata.subjects.is_empty() {
+            let subjects = self.metadata.subjects.join("; ");
+            add_record(105, subjects.as_bytes());
+        }
+
+        // Record 106: Published date
+        if let Some(ref date) = self.metadata.date {
+            add_record(106, date.as_bytes());
+        }
+
+        // Record 503: Title (in EXTH for better compatibility)
+        add_record(503, self.metadata.title.as_bytes());
+
+        // Record 524: Language
+        if !self.metadata.language.is_empty() {
+            add_record(524, self.metadata.language.as_bytes());
+        }
+
+        // Record 112: Source (identifier)
+        if !self.metadata.identifier.is_empty() {
+            add_record(112, self.metadata.identifier.as_bytes());
+        }
+
+        // Update header length and record count
+        let exth_len = exth.len() as u32;
+        let len_bytes = exth_len.to_be_bytes();
+        exth[length_offset..length_offset + 4].copy_from_slice(&len_bytes);
+
+        let count_bytes = record_count.to_be_bytes();
+        exth[count_offset..count_offset + 4].copy_from_slice(&count_bytes);
+
+        exth
     }
 
     /// Build MOBI 6 header (Record 0 content, after PalmDB header)
@@ -422,9 +485,9 @@ impl MobiBuilder {
             header.push(0);
         }
 
-        // Title offset (4 bytes)
-        let title_offset = 232u32; // After header
-        header.extend_from_slice(&title_offset.to_be_bytes());
+        // Title offset (4 bytes) - will update later after EXTH is added
+        let title_offset_offset = header.len();
+        header.extend_from_slice(&0u32.to_be_bytes()); // placeholder
 
         // Title length (4 bytes)
         let title_len = self.metadata.title.len() as u32;
@@ -465,17 +528,36 @@ impl MobiBuilder {
             header.push(0);
         }
 
-        // EXTH flags (4 bytes) - 0x40 = EXTH present
-        header.extend_from_slice(&0x40u32.to_be_bytes());
+        // EXTH flags (4 bytes) - 0x50 = EXTH present + additional bit
+        // Reference file uses 0x50, bit 4 (0x10) might indicate embedded content
+        header.extend_from_slice(&0x50u32.to_be_bytes());
 
         // Update header length at stored offset
         let header_len = header.len() as u32;
         let len_bytes = header_len.to_be_bytes();
         header[header_length_offset..header_length_offset + 4].copy_from_slice(&len_bytes);
 
-        // Add title after header
+        // Build EXTH metadata header
+        let exth = self.build_exth_header();
+
+        // Add EXTH header if it has records
+        if !exth.is_empty() {
+            header.extend_from_slice(&exth);
+        }
+
+        // Update title offset field to point to where title will be
+        let title_offset = header.len() as u32;
+        let offset_bytes = title_offset.to_be_bytes();
+        header[title_offset_offset..title_offset_offset + 4].copy_from_slice(&offset_bytes);
+
+        // Add title
         let title_bytes = self.metadata.title.as_bytes();
         header.extend_from_slice(title_bytes);
+
+        // Update header length to include EXTH and title
+        let total_header_len = header.len() as u32;
+        let len_bytes = total_header_len.to_be_bytes();
+        header[header_length_offset..header_length_offset + 4].copy_from_slice(&len_bytes);
 
         header
     }
@@ -788,8 +870,7 @@ impl MobiBuilder {
         let pdb_header = self.build_palmdb_header(num_records as u16);
 
         // Build MOBI header (Record 0 content)
-        let text_length: u32 = self.text_records.iter().map(|r| r.len()).sum::<usize>() as u32; // Uncompressed length estimate
-        let mobi_header = self.build_mobi_header(text_length);
+        let mobi_header = self.build_mobi_header(self.text_length);
 
         // Calculate record offsets
         let mut offsets = Vec::new();
