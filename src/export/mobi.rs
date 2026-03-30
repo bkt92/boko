@@ -4,10 +4,56 @@
 
 use std::collections::HashMap;
 use std::io::{self, Seek, Write};
+use std::path::Path;
 
 use crate::model::{Book, Metadata, TocEntry};
 
 use super::Exporter;
+
+/// Convert a number to base-32 encoding with 4 digits
+/// Used for kindle:embed references in MOBI files
+fn to_base32(mut num: u32) -> String {
+    const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    if num == 0 {
+        return "0000".to_string();
+    }
+
+    let mut result = Vec::new();
+    while num > 0 {
+        result.push(DIGITS[(num % 32) as usize]);
+        num /= 32;
+    }
+
+    // Pad to 4 digits
+    while result.len() < 4 {
+        result.push(b'0');
+    }
+
+    result.reverse();
+    String::from_utf8(result).unwrap()
+}
+
+/// Get mime type from file path
+fn get_mime_type(path: &str) -> &str {
+    let path_lower = path.to_lowercase();
+
+    if path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if path_lower.ends_with(".png") {
+        "image/png"
+    } else if path_lower.ends_with(".gif") {
+        "image/gif"
+    } else if path_lower.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path_lower.ends_with(".webp") {
+        "image/webp"
+    } else if path_lower.ends_with(".bmp") {
+        "image/bmp"
+    } else {
+        "application/octet-stream"
+    }
+}
 
 /// Configuration for MOBI 6 export.
 #[derive(Debug, Clone)]
@@ -83,21 +129,58 @@ impl MobiExporter {
     }
 
     /// Collect HTML content from book chapters
-    /// For MOBI 6, preserve original HTML without modifying image references
+    /// Replace image src attributes with kindle:embed format
     fn update_image_references(&self, html: &str, builder: &MobiBuilder) -> String {
-        // For MOBI 6, preserve original HTML with src attributes
-        // The MOBI reader will handle image mapping internally
-        // DO NOT convert to recindex format - this causes compatibility issues
+        // MOBI format uses kindle:embed:XXXX?mime=image/* format for images
+        // where XXX is the base-32 encoded record number (4 digits)
 
-        // Log the number of images processed
-        if !builder.image_path_to_record.is_empty() {
-            eprintln!(
-                "MOBI: Preserving {} images with original src attributes",
-                builder.image_path_to_record.len()
-            );
+        let mut result = html.to_string();
+        let mut replaced = 0;
+
+        for (image_path, &record_index) in &builder.image_path_to_record {
+            // Convert record index to base-32 with 4 digits
+            let ref_id = to_base32(record_index);
+
+            // Get mime type from file extension
+            let mime_type = get_mime_type(image_path);
+
+            // Create kindle:embed reference
+            let kindle_ref = if mime_type == "image/jpeg" {
+                format!("kindle:embed:{}?mime=image/jpeg", ref_id)
+            } else if mime_type == "image/png" {
+                format!("kindle:embed:{}?mime=image/png", ref_id)
+            } else if mime_type == "image/gif" {
+                format!("kindle:embed:{}?mime=image/gif", ref_id)
+            } else {
+                format!("kindle:embed:{}", ref_id)
+            };
+
+            // Try to match both full path and just filename
+            // HTML can have paths like "images/image_0015.jpg" or "OEBPS/images/image_0015.jpg"
+            let old_src_full = format!("src=\"{}\"", image_path);
+            let old_src_single = format!("src='{}'", image_path);
+
+            // Also try just the filename
+            let filename = if let Some(name) = Path::new(image_path).file_name() {
+                name.to_string_lossy().to_string()
+            } else {
+                image_path.clone()
+            };
+            let old_src_file = format!("src=\"{}\"", filename);
+            let old_src_file_single = format!("src='{}'", filename);
+
+            // Replace all occurrences
+            for old_src in &[old_src_full, old_src_single, old_src_file, old_src_file_single] {
+                if result.contains(old_src) {
+                    result = result.replace(old_src, &format!("src=\"{}\"", kindle_ref));
+                    replaced += 1;
+                    break; // Only need to replace once per image
+                }
+            }
         }
 
-        html.to_string()
+        eprintln!("MOBI: Replaced {} image references with kindle:embed format", replaced);
+        result
     }
 
     fn collect_html_content(&self, book: &mut Book) -> io::Result<String> {
@@ -274,9 +357,24 @@ impl MobiBuilder {
                 let record_index = self.image_records.len() as u32;
                 self.image_records.push(image_data);
 
-                // Map path -> record index for HTML filtering
-                let path_str = image_path.to_string_lossy().to_string();
-                self.image_path_to_record.insert(path_str, record_index);
+                // Store the relative path for HTML replacement
+                // HTML uses paths like "images/image_0015.jpg"
+                // We need to match what's actually in the HTML
+                let relative_path = if let Some(parent) = image_path.parent() {
+                    if let Some(dirname) = parent.file_name() {
+                        if let Some(filename) = image_path.file_name() {
+                            format!("{}/{}", dirname.to_string_lossy(), filename.to_string_lossy())
+                        } else {
+                            path_str.to_string()
+                        }
+                    } else {
+                        path_str.to_string()
+                    }
+                } else {
+                    path_str.to_string()
+                };
+
+                self.image_path_to_record.insert(relative_path, record_index);
             }
         }
 
