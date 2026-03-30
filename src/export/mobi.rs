@@ -495,7 +495,6 @@ impl MobiBuilder {
     /// Based on calibre's MOBIHeader implementation with 264-byte header
     fn build_mobi_header(&self, text_length: u32) -> Vec<u8> {
         let mut header = Vec::new();
-        let title_offset_offset = 84; // Fixed offset for title_offset field
 
         // Offset 0: Compression type (2 bytes) - PalmDoc = 2
         header.extend_from_slice(&2u16.to_be_bytes());
