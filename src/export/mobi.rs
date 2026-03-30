@@ -10,51 +10,6 @@ use crate::model::{Book, Metadata, TocEntry};
 
 use super::Exporter;
 
-/// Convert a number to base-32 encoding with 4 digits
-/// Used for kindle:embed references in MOBI files
-fn to_base32(mut num: u32) -> String {
-    const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-    if num == 0 {
-        return "0000".to_string();
-    }
-
-    let mut result = Vec::new();
-    while num > 0 {
-        result.push(DIGITS[(num % 32) as usize]);
-        num /= 32;
-    }
-
-    // Pad to 4 digits
-    while result.len() < 4 {
-        result.push(b'0');
-    }
-
-    result.reverse();
-    String::from_utf8(result).unwrap()
-}
-
-/// Get mime type from file path
-fn get_mime_type(path: &str) -> &str {
-    let path_lower = path.to_lowercase();
-
-    if path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
-        "image/jpeg"
-    } else if path_lower.ends_with(".png") {
-        "image/png"
-    } else if path_lower.ends_with(".gif") {
-        "image/gif"
-    } else if path_lower.ends_with(".svg") {
-        "image/svg+xml"
-    } else if path_lower.ends_with(".webp") {
-        "image/webp"
-    } else if path_lower.ends_with(".bmp") {
-        "image/bmp"
-    } else {
-        "application/octet-stream"
-    }
-}
-
 /// Configuration for MOBI 6 export.
 #[derive(Debug, Clone)]
 pub struct MobiConfig {
@@ -128,58 +83,45 @@ impl MobiExporter {
         })
     }
 
-    /// Collect HTML content from book chapters
-    /// Replace image src attributes with kindle:embed format
+    /// Replace image src attributes with MOBI 6 recindex format.
+    ///
+    /// MOBI 6 uses `<img recindex="NNNNN">` where NNNNN is a 5-digit, 1-based
+    /// index into the image records. This matches Calibre's writer2 output and
+    /// KindleUnpack's reading conventions.
     fn update_image_references(&self, html: &str, builder: &MobiBuilder) -> String {
-        // MOBI format uses kindle:embed:XXXX?mime=image/* format for images
-        // where XXX is the base-32 encoded record number (4 digits)
-
         let mut result = html.to_string();
         let mut replaced = 0;
 
         for (image_path, &record_index) in &builder.image_path_to_record {
-            // Convert record index to base-32 with 4 digits
-            let ref_id = to_base32(record_index);
+            // MOBI 6 recindex: 5-digit, 1-based decimal index
+            let recindex = format!("{:05}", record_index);
 
-            // Get mime type from file extension
-            let mime_type = get_mime_type(image_path);
-
-            // Create kindle:embed reference
-            let kindle_ref = if mime_type == "image/jpeg" {
-                format!("kindle:embed:{}?mime=image/jpeg", ref_id)
-            } else if mime_type == "image/png" {
-                format!("kindle:embed:{}?mime=image/png", ref_id)
-            } else if mime_type == "image/gif" {
-                format!("kindle:embed:{}?mime=image/gif", ref_id)
-            } else {
-                format!("kindle:embed:{}", ref_id)
-            };
-
-            // Try to match both full path and just filename
-            // HTML can have paths like "images/image_0015.jpg" or "OEBPS/images/image_0015.jpg"
-            let old_src_full = format!("src=\"{}\"", image_path);
-            let old_src_single = format!("src='{}'", image_path);
-
-            // Also try just the filename
+            // Try to match src attributes with various path formats
             let filename = if let Some(name) = Path::new(image_path).file_name() {
                 name.to_string_lossy().to_string()
             } else {
                 image_path.clone()
             };
-            let old_src_file = format!("src=\"{}\"", filename);
-            let old_src_file_single = format!("src='{}'", filename);
 
-            // Replace all occurrences
-            for old_src in &[old_src_full, old_src_single, old_src_file, old_src_file_single] {
-                if result.contains(old_src) {
-                    result = result.replace(old_src, &format!("src=\"{}\"", kindle_ref));
+            let patterns = [
+                format!("src=\"{}\"", image_path),
+                format!("src='{}'", image_path),
+                format!("src=\"{}\"", filename),
+                format!("src='{}'", filename),
+            ];
+
+            let replacement = format!("recindex=\"{}\"", recindex);
+
+            for pattern in &patterns {
+                if result.contains(pattern) {
+                    result = result.replace(pattern, &replacement);
                     replaced += 1;
-                    break; // Only need to replace once per image
+                    break;
                 }
             }
         }
 
-        eprintln!("MOBI: Replaced {} image references with kindle:embed format", replaced);
+        eprintln!("MOBI: Replaced {} image references with recindex format", replaced);
         result
     }
 
@@ -354,7 +296,8 @@ impl MobiBuilder {
             // This ensures compatibility with readers and prevents quality loss
             if !image_data.is_empty() {
                 // Store original image data
-                let record_index = self.image_records.len() as u32;
+                // kindle:embed indices are 1-based (Calibre convention: reader does idx-1)
+                let record_index = self.image_records.len() as u32 + 1;
                 self.image_records.push(image_data);
 
                 // Store the relative path for HTML replacement
@@ -608,16 +551,15 @@ impl MobiBuilder {
         header.extend_from_slice(&(self.text_records.len() as u32).to_be_bytes());
 
         // Offset 200: FCIS record (4 bytes)
-        // FCIS is record 143 in our structure
-        let fcis_record = (self.text_records.len() as u32) + 1 + 3 + self.image_records.len() as u32;
+        // FLIS is written first, then FCIS: FLIS at N+4+M, FCIS at N+4+M+1
+        let flis_record = (self.text_records.len() as u32) + 1 + 3 + self.image_records.len() as u32;
+        let fcis_record = flis_record + 1;
         header.extend_from_slice(&fcis_record.to_be_bytes());
 
         // Offset 204: FCIS count (4 bytes)
         header.extend_from_slice(&1u32.to_be_bytes());
 
         // Offset 208: FLIS record (4 bytes)
-        // FLIS is record 142 in our structure
-        let flis_record = fcis_record - 1;
         header.extend_from_slice(&flis_record.to_be_bytes());
 
         // Offset 212: FLIS count (4 bytes)
