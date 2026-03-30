@@ -504,15 +504,24 @@ impl MobiBuilder {
         // Reference has 0x0003 but we set 0x0000 to avoid complexity
         header.extend_from_slice(&0u16.to_be_bytes());
 
-        // Pad to end of MOBI header (minimum 232 bytes, but we have EXTH so longer)
+        // Pad to end of MOBI header (exactly 232 bytes)
         while header.len() < 232 {
             header.push(0);
         }
 
-        // Update header length at stored offset
-        let header_len = header.len() as u32;
+        // MOBI header length MUST be 232 bytes (fixed structure)
+        // This does NOT include EXTH or title - they come after
+        let header_len = 232u32;
         let len_bytes = header_len.to_be_bytes();
         header[header_length_offset..header_length_offset + 4].copy_from_slice(&len_bytes);
+
+        // Add padding before EXTH (16 bytes as seen in reference files)
+        // Reference shows EXTH starts at 248 bytes from MOBI header
+        // 232 (header) + 16 (padding) = 248
+        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
+        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
+        header.extend_from_slice(&0x00000003u32.to_be_bytes());
+        header.extend_from_slice(&0x00000000u32.to_be_bytes());
 
         // Build EXTH metadata header
         let exth = self.build_exth_header();
@@ -530,11 +539,6 @@ impl MobiBuilder {
         // Add title
         let title_bytes = self.metadata.title.as_bytes();
         header.extend_from_slice(title_bytes);
-
-        // Update header length to include EXTH and title
-        let total_header_len = header.len() as u32;
-        let len_bytes = total_header_len.to_be_bytes();
-        header[header_length_offset..header_length_offset + 4].copy_from_slice(&len_bytes);
 
         header
     }
