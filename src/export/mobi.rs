@@ -494,6 +494,21 @@ impl MobiBuilder {
         // Reference file uses 0x50, bit 4 (0x10) might indicate embedded content
         header.extend_from_slice(&0x50u32.to_be_bytes());
 
+        // Pad to extra_flags offset (0xF2)
+        while header.len() < 0xF2 {
+            header.push(0);
+        }
+
+        // Extra flags (2 bytes) - 0x0000 = no trailing data
+        // This is critical! Wrong value causes PalmDoc decompression to fail
+        // Reference has 0x0003 but we set 0x0000 to avoid complexity
+        header.extend_from_slice(&0u16.to_be_bytes());
+
+        // Pad to end of MOBI header (minimum 232 bytes, but we have EXTH so longer)
+        while header.len() < 232 {
+            header.push(0);
+        }
+
         // Update header length at stored offset
         let header_len = header.len() as u32;
         let len_bytes = header_len.to_be_bytes();
