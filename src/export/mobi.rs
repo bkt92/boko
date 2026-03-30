@@ -700,7 +700,7 @@ impl MobiBuilder {
 
         // IDXT section (starts at offset 340)
         // Build index entries from TOC
-        for (i, entry) in self.toc.iter().enumerate() {
+        for (i, _entry) in self.toc.iter().enumerate() {
             // Control byte (1 byte) - all tags present
             indx.push(0x3F); // 0b00111111 = tags 1-6 present
 
@@ -887,7 +887,7 @@ impl MobiBuilder {
         offset += fcis_record.len();
 
         offsets.push(offset);
-        offset += eof_marker.len();
+        // EOF marker is last record, no need to calculate next offset
 
         // Write PalmDB header
         writer.write_all(&pdb_header)?;
