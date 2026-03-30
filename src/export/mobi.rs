@@ -83,55 +83,21 @@ impl MobiExporter {
     }
 
     /// Collect HTML content from book chapters
-    /// Update image references in HTML to use MOBI record indices
+    /// For MOBI 6, preserve original HTML without modifying image references
     fn update_image_references(&self, html: &str, builder: &MobiBuilder) -> String {
-        let mut result = html.to_string();
-
-        // Calculate first image record index
-        // Images come after: Record 0 + text records + INDX/CNCX records (3)
-        let first_image_record = (builder.text_records.len() + 1 + 3) as u32;
-
-        // Update each image reference
-        for (image_path, image_index) in &builder.image_path_to_record {
-            let mobi_record_index = first_image_record + image_index;
-            let mobi_img_tag = format!(r#"<img recindex="{}"/>"#, mobi_record_index);
-
-            // Get filename from path (handle both forward and backslash)
-            let filename = match image_path.rsplit('\\').next() {
-                Some(name) if name.contains('/') => {
-                    name.rsplit('/').next().unwrap_or(name)
-                }
-                Some(name) => name,
-                None => image_path,
-            };
-
-            // Try multiple image reference patterns
-            let patterns = vec![
-                format!(r#"src="{}""#, image_path.replace('\\', "/")),
-                format!(r#"src='{}'"#, image_path.replace('\\', "/")),
-                format!(r#"src="../images/{}""#, filename),
-                format!(r#"src='../images/{}'"#, filename),
-                format!(r#"src="images/{}""#, filename),
-                format!(r#"src='images/{}'"#, filename),
-                format!(r#"src="{}""#, filename),
-                format!(r#"src='{}'"#, filename),
-            ];
-
-            for pattern in patterns {
-                result = result.replace(&pattern, &mobi_img_tag);
-            }
-        }
+        // For MOBI 6, preserve original HTML with src attributes
+        // The MOBI reader will handle image mapping internally
+        // DO NOT convert to recindex format - this causes compatibility issues
 
         // Log the number of images processed
         if !builder.image_path_to_record.is_empty() {
             eprintln!(
-                "MOBI: Processed {} images with recindex format (starting at record {})",
-                builder.image_path_to_record.len(),
-                first_image_record
+                "MOBI: Preserving {} images with original src attributes",
+                builder.image_path_to_record.len()
             );
         }
 
-        result
+        html.to_string()
     }
 
     fn collect_html_content(&self, book: &mut Book) -> io::Result<String> {
@@ -321,9 +287,6 @@ impl MobiBuilder {
     fn build_text_records(&mut self, html_content: &str) -> io::Result<()> {
         use crate::mobi::palmdoc;
 
-        // Store uncompressed text length for MOBI header
-        self.text_length = html_content.len() as u32;
-
         // Split HTML into chunks, then compress each chunk independently
         // This ensures PalmDoc back-references don't span record boundaries
         const RECORD_SIZE: usize = 4096;
@@ -347,6 +310,10 @@ impl MobiBuilder {
         if self.text_records.is_empty() {
             self.text_records.push(Vec::new());
         }
+
+        // Store uncompressed text length for MOBI header
+        // This must match exactly what the decompressor will produce
+        self.text_length = html_content.len() as u32;
 
         Ok(())
     }
