@@ -137,9 +137,6 @@ impl MobiExporter {
     fn collect_html_content(&self, book: &mut Book) -> io::Result<String> {
         let mut html = String::new();
 
-        // Simple HTML wrapper
-        html.push_str("<html><body>");
-
         // Get spine (reading order) - collect entries to avoid borrow checker
         let spine_entries: Vec<_> = book.spine().to_vec();
 
@@ -155,8 +152,6 @@ impl MobiExporter {
                 }
             }
         }
-
-        html.push_str("</body></html>");
 
         Ok(html)
     }
