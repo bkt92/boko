@@ -17,6 +17,96 @@ fn find_element_position(html: &str, element_id: &str) -> Option<u32> {
     html.find(&pattern).map(|pos| pos as u32)
 }
 
+/// Find a safe UTF-8 boundary near `max_len` bytes from the start.
+///
+/// Walks backward from `max_len` to avoid splitting a multibyte character.
+/// Returns the safe split position.
+fn find_utf8_boundary(bytes: &[u8], max_len: usize) -> usize {
+    let mut end = max_len.min(bytes.len());
+    // A continuation byte has pattern 10xxxxxx (0x80-0xBF)
+    while end > 0 && end < bytes.len() && (bytes[end] & 0xC0) == 0x80 {
+        end -= 1;
+    }
+    end
+}
+
+/// Map BCP-47 language tag to MOBI language code.
+fn language_code(lang: &str) -> u32 {
+    let lang_lower = lang.to_lowercase();
+    let primary = lang_lower.split('-').next().unwrap_or("");
+    match primary {
+        "en" => 0x09,
+        "de" => 0x07,
+        "fr" => 0x0C,
+        "es" => 0x0A,
+        "it" => 0x11,
+        "ja" => 0x15,
+        "zh" => 0x19,
+        "ko" => 0x12,
+        "pt" => 0x16,
+        "ru" => 0x17,
+        "nl" => 0x13,
+        "sv" => 0x1A,
+        "da" => 0x06,
+        "fi" => 0x0B,
+        "el" => 0x08,
+        "cs" => 0x05,
+        "pl" => 0x15,
+        "tr" => 0x1F,
+        "ar" => 0x01,
+        "he" => 0x0D,
+        "th" => 0x1D,
+        "hu" => 0x0E,
+        "no" => 0x14,
+        _ => 0x09, // Default to English
+    }
+}
+
+/// Encode trailing byte sequence (TBS) for a text record.
+///
+/// TBS tells the Kindle reader which TOC entries fall within this record,
+/// enabling accurate navigation. Each entry is encoded as (offset, length)
+/// pairs using variable-width integers. The encoded data is appended to the
+/// compressed record, with a backward-encoded size prefix.
+fn _encode_trailing_data(entries: &[(u32, u32)]) -> Vec<u8> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    /// Encode a variable-width integer (same format as MOBI encint).
+    fn encode_vwi(mut val: u32) -> Vec<u8> {
+        let mut result = Vec::new();
+        loop {
+            let mut byte = (val & 0x7F) as u8;
+            val >>= 7;
+            if val > 0 {
+                byte |= 0x80;
+            }
+            result.push(byte);
+            if val == 0 {
+                break;
+            }
+        }
+        result
+    }
+
+    // Encode the entry data
+    let mut data = Vec::new();
+    for &(offset, length) in entries {
+        data.extend_from_slice(&encode_vwi(offset));
+        data.extend_from_slice(&encode_vwi(length));
+    }
+
+    // Encode size as backward variable-width integer
+    let size = data.len() as u32;
+    let mut size_bytes = encode_vwi(size);
+    size_bytes.reverse(); // Backward encoding
+
+    let mut result = size_bytes;
+    result.extend_from_slice(&data);
+    result
+}
+
 /// Flatten hierarchical TOC into a linear list of NcxBuildEntry for MOBI 6.
 ///
 /// Walks TocEntry tree recursively, resolves byte positions in the HTML,
@@ -71,9 +161,9 @@ fn flatten_toc_for_mobi(
             ""
         };
 
-        if fragment.starts_with("filepos") {
+        if let Some(stripped) = fragment.strip_prefix("filepos") {
             // MOBI filepos anchor: parse byte position directly
-            if let Ok(pos) = fragment[7..].parse::<u32>() {
+            if let Ok(pos) = stripped.parse::<u32>() {
                 return pos;
             }
         } else if !fragment.is_empty() {
@@ -152,11 +242,9 @@ fn flatten_toc_for_mobi(
 
     // Re-index: build mapping from old index to new index
     let mut old_to_new: Vec<i32> = vec![-1; result.len()];
-    let mut new_idx = 0i32;
     for (i, should_keep) in keep.iter().enumerate() {
         if *should_keep {
-            old_to_new[i] = new_idx;
-            new_idx += 1;
+            old_to_new[i] = old_to_new.len() as i32;
         }
     }
 
@@ -303,7 +391,7 @@ impl MobiExporter {
         // Get spine (reading order) - collect entries to avoid borrow checker
         let spine_entries: Vec<_> = book.spine().to_vec();
 
-        for entry in spine_entries {
+        for (i, entry) in spine_entries.iter().enumerate() {
             // Record the position where this chapter starts (before inserting anchor)
             let position = html.len() as u32;
 
@@ -314,6 +402,11 @@ impl MobiExporter {
                 Ok(data) => {
                     // Convert bytes to string, ignoring encoding issues
                     let chapter_html = String::from_utf8_lossy(&data);
+
+                    // Add page break between chapters (not before first)
+                    if i > 0 {
+                        html.push_str("<mbp:pagebreak/>");
+                    }
 
                     // Insert anchor tag at chapter start for TOC linking
                     // MOBI format uses fileposNNNNN style anchors
@@ -332,6 +425,71 @@ impl MobiExporter {
         }
 
         Ok((html, chapter_positions))
+    }
+
+    /// Resolve internal links (href) to MOBI filepos references.
+    ///
+    /// Converts `<a href="chapter.xhtml">` and `<a href="chapter.xhtml#section">`
+    /// to `<a filepos="NNNNN">` where NNNN is the byte position of the target
+    /// chapter anchor in the combined HTML.
+    fn resolve_internal_links(&self, html: &str, chapter_positions: &HashMap<String, u32>) -> String {
+        let mut result = html.to_string();
+
+        // Build a map of href patterns to filepos values
+        for (chapter_id, &position) in chapter_positions {
+            // chapter_id is like "ChapterId(chapter1.xhtml)"
+            // Extract the raw chapter name
+            let raw_name = if chapter_id.starts_with("ChapterId(") && chapter_id.ends_with(')') {
+                &chapter_id[10..chapter_id.len() - 1]
+            } else {
+                continue;
+            };
+
+            // Try to match various href patterns pointing to this chapter
+            let filepos = format!("filepos=\"{}\"", position);
+
+            // Pattern: href="chapter1.xhtml" or href="text/chapter1.xhtml"
+            let patterns = [
+                format!("href=\"{}\"", raw_name),
+                format!("href='{}'", raw_name),
+            ];
+
+            for pattern in &patterns {
+                if result.contains(pattern) {
+                    result = result.replace(pattern, &filepos);
+                }
+            }
+        }
+
+        // Also convert any remaining href="#fileposNNNNN" to filepos="NNNNN"
+        // Pattern: href="#filepos12345" → filepos="12345"
+        let mut updated = String::new();
+        let mut pos = 0;
+        let bytes = result.as_bytes();
+
+        while pos < bytes.len() {
+            if pos + 15 < bytes.len() && &bytes[pos..pos+15] == b"href=\"#filepos" {
+                // Found href="#filepos... pattern
+                let start = pos + 13; // after 'href="#'
+                let mut end = start;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
+                }
+                if end < bytes.len() && bytes[end] == b'"' {
+                    // Extract the position number
+                    let num_str = &result[start..end];
+                    updated.push_str("filepos=\"");
+                    updated.push_str(num_str);
+                    updated.push('"');
+                    pos = end + 1; // skip closing quote
+                    continue;
+                }
+            }
+            updated.push(bytes[pos] as char);
+            pos += 1;
+        }
+
+        updated
     }
 }
 
@@ -358,6 +516,10 @@ struct MobiBuilder {
     image_records: Vec<Vec<u8>>,
     /// Image path -> record index mapping
     image_path_to_record: HashMap<String, u32>,
+    /// Cover image record index (1-based)
+    cover_record_index: Option<u32>,
+    /// Start reading position (byte offset of first chapter body)
+    start_reading_offset: u32,
     /// Book metadata
     metadata: Metadata,
     /// Table of contents
@@ -384,6 +546,8 @@ impl MobiBuilder {
             text_length: 0,
             image_records: Vec::new(),
             image_path_to_record: HashMap::new(),
+            cover_record_index: None,
+            start_reading_offset: 0,
             metadata,
             toc,
             chapter_positions: HashMap::new(),
@@ -489,6 +653,20 @@ impl MobiBuilder {
                 let record_index = self.image_records.len() as u32 + 1;
                 self.image_records.push(image_data);
 
+                // Detect cover image
+                if self.cover_record_index.is_none() {
+                    let filename_lower = path_str.to_lowercase();
+                    let is_cover = filename_lower.contains("cover")
+                        || self.metadata.cover_image.as_ref().is_some_and(|c| {
+                            path_str.ends_with(&c.replace('\\', "/"))
+                                || path_str.ends_with(&c.replace('/', "\\"))
+                                || filename_lower.ends_with(&c.to_lowercase().replace('\\', "/"))
+                        });
+                    if is_cover {
+                        self.cover_record_index = Some(record_index);
+                    }
+                }
+
                 // Store the relative path for HTML replacement
                 // HTML uses paths like "images/image_0015.jpg"
                 // We need to match what's actually in the HTML
@@ -526,7 +704,12 @@ impl MobiBuilder {
         let html_bytes = html_content.as_bytes();
 
         while offset < html_bytes.len() {
-            let end = (offset + RECORD_SIZE).min(html_bytes.len());
+            let proposed_end = (offset + RECORD_SIZE).min(html_bytes.len());
+            let end = if proposed_end < html_bytes.len() {
+                find_utf8_boundary(html_bytes, proposed_end)
+            } else {
+                proposed_end
+            };
             let chunk = &html_bytes[offset..end];
 
             // Compress this chunk
@@ -599,6 +782,32 @@ impl MobiBuilder {
             add_record(106, date.as_bytes());
         }
 
+        // Record 112: Source (identifier)
+        if !self.metadata.identifier.is_empty() {
+            add_record(112, self.metadata.identifier.as_bytes());
+        }
+
+        // Record 113: ASIN/UUID (for Kindle identification)
+        add_record(113, self.metadata.identifier.as_bytes());
+
+        // Record 116: Start reading offset
+        if self.start_reading_offset > 0 {
+            add_record(116, &self.start_reading_offset.to_be_bytes());
+        }
+
+        // Record 201: Cover offset (record index of cover image)
+        if let Some(cover_idx) = self.cover_record_index {
+            add_record(201, &cover_idx.to_be_bytes());
+        }
+
+        // Record 202: Thumbnail offset (same as cover for MOBI 6)
+        if let Some(cover_idx) = self.cover_record_index {
+            add_record(202, &cover_idx.to_be_bytes());
+        }
+
+        // Record 501: CDE type = "EBOK" (e-book)
+        add_record(501, b"EBOK");
+
         // Record 503: Title (in EXTH for better compatibility)
         add_record(503, self.metadata.title.as_bytes());
 
@@ -607,14 +816,13 @@ impl MobiBuilder {
             add_record(524, self.metadata.language.as_bytes());
         }
 
-        // Record 112: Source (identifier)
-        if !self.metadata.identifier.is_empty() {
-            add_record(112, self.metadata.identifier.as_bytes());
-        }
-
         // Update header length and record count
-        let exth_len = exth.len() as u32;
-        let len_bytes = exth_len.to_be_bytes();
+        // Pad to 4-byte boundary
+        while exth.len() % 4 != 0 {
+            exth.push(0);
+        }
+        let exth_len_padded = exth.len() as u32;
+        let len_bytes = exth_len_padded.to_be_bytes();
         exth[length_offset..length_offset + 4].copy_from_slice(&len_bytes);
 
         let count_bytes = record_count.to_be_bytes();
@@ -690,7 +898,8 @@ impl MobiBuilder {
         header.extend_from_slice(&title_len.to_be_bytes());
 
         // Offset 92: Language code (4 bytes)
-        header.extend_from_slice(&0x09u32.to_be_bytes()); // English
+        let lang = language_code(&self.metadata.language);
+        header.extend_from_slice(&lang.to_be_bytes());
 
         // Offset 96-103: Dictionary in/out languages (0)
         header.extend_from_slice(&0u64.to_be_bytes());
@@ -1061,10 +1270,18 @@ impl Exporter for MobiExporter {
 
         // Get HTML content from book and track chapter positions
         let (html_content, chapter_positions) = self.collect_html_content(book)?;
-        builder.chapter_positions = chapter_positions;
+        builder.chapter_positions = chapter_positions.clone();
+
+        // Set start reading position (first chapter body text)
+        if let Some(first_pos) = chapter_positions.values().min() {
+            builder.start_reading_offset = *first_pos;
+        }
 
         // Update image references in HTML to use MOBI record indices
         let html_content = self.update_image_references(&html_content, &builder);
+
+        // Resolve internal links to MOBI filepos references
+        let html_content = self.resolve_internal_links(&html_content, &chapter_positions);
 
         // Build text records
         builder.build_text_records(&html_content)?;
