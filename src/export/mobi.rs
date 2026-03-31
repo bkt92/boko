@@ -831,7 +831,8 @@ impl MobiBuilder {
     }
 
     /// Build MOBI 6 header (Record 0 content, after PalmDB header)
-    /// MOBI 6 uses 232-byte header (0xE8). KF8 uses 264.
+    /// Uses 264-byte header. The extra bytes beyond 232 are needed because
+    /// our parser reads ncx_index from offset 244.
     fn build_mobi_header(&self, text_length: u32, index_record_count: usize) -> Vec<u8> {
         let mut header = Vec::new();
 
@@ -844,12 +845,9 @@ impl MobiBuilder {
         // Offset 4: Text length (4 bytes)
         header.extend_from_slice(&text_length.to_be_bytes());
 
-        // Offset 8: Last text record (2 bytes) - 0-indexed
-        let record_count = if self.text_records.is_empty() {
-            0u16
-        } else {
-            (self.text_records.len() - 1) as u16
-        };
+        // Offset 8: Text record count (2 bytes)
+        // Parser uses this as `1..=count` to read text records
+        let record_count = self.text_records.len() as u16;
         header.extend_from_slice(&record_count.to_be_bytes());
 
         // Offset 10: Text record size (2 bytes) - 4096
@@ -864,8 +862,8 @@ impl MobiBuilder {
         // Offset 16: Ident (4 bytes) - "MOBI"
         header.extend_from_slice(b"MOBI");
 
-        // Offset 20: Header length (4 bytes) - 232 (0xE8) for MOBI 6
-        header.extend_from_slice(&232u32.to_be_bytes());
+        // Offset 20: Header length (4 bytes) - 264
+        header.extend_from_slice(&264u32.to_be_bytes());
 
         // Offset 24: Book type (4 bytes) - 2 = standard book
         header.extend_from_slice(&2u32.to_be_bytes());
@@ -884,11 +882,6 @@ impl MobiBuilder {
         header.extend_from_slice(&6u32.to_be_bytes());
 
         // Offset 40-79: Extra record indices (10 x 4 bytes)
-        // [0] meta orth index (NULL)
-        // [1] meta infl index (NULL)
-        // [2] orth index = NCX record (MOBI 6 readers use this for TOC)
-        // [3] infl index (NULL)
-        // [4-9] unused (NULL)
         let ncx_index = if index_record_count > 0 {
             1u32 + self.text_records.len() as u32
         } else {
@@ -939,19 +932,16 @@ impl MobiBuilder {
         // Offset 128: EXTH flags (4 bytes) - 0x50 = EXTH present
         header.extend_from_slice(&0x50u32.to_be_bytes());
 
-        // Offset 132-159: Unknown (28 bytes of 0)
-        while header.len() < 160 {
+        // Offset 132-163: Unknown (32 bytes of 0)
+        while header.len() < 164 {
             header.push(0);
         }
-
-        // Offset 160-163: Unknown (4 bytes of 0)
-        header.extend_from_slice(&0u32.to_be_bytes());
 
         // Offset 164-167: Unknown index (NULL)
         header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
 
         // Offset 168-183: DRM (4 x 4 bytes)
-        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // drm_offset = NULL
+        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
         header.extend_from_slice(&0u32.to_be_bytes());
         header.extend_from_slice(&0u32.to_be_bytes());
         header.extend_from_slice(&0u32.to_be_bytes());
@@ -970,11 +960,11 @@ impl MobiBuilder {
             + self.image_records.len() as u32;
         let fcis_record = flis_record + 1;
         header.extend_from_slice(&fcis_record.to_be_bytes());
-        header.extend_from_slice(&1u32.to_be_bytes()); // count
+        header.extend_from_slice(&1u32.to_be_bytes());
 
         // Offset 208-215: FLIS record index + count
         header.extend_from_slice(&flis_record.to_be_bytes());
-        header.extend_from_slice(&1u32.to_be_bytes()); // count
+        header.extend_from_slice(&1u32.to_be_bytes());
 
         // Offset 216-223: Unknown (8 bytes)
         header.extend_from_slice(&0u64.to_be_bytes());
@@ -985,8 +975,23 @@ impl MobiBuilder {
         // Offset 228-231: SRCS count (0)
         header.extend_from_slice(&0u32.to_be_bytes());
 
-        // Total: 232 bytes (0xE8) — end of MOBI 6 header
-        assert_eq!(header.len(), 232, "MOBI 6 header must be exactly 232 bytes");
+        // Offset 232-239: Unknown (8 bytes of 0xFF)
+        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
+        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
+
+        // Offset 240: Extra data flags (4 bytes)
+        header.extend_from_slice(&0u32.to_be_bytes());
+
+        // Offset 244-247: NCX index (our parser reads this at data[0xF4])
+        header.extend_from_slice(&ncx_index.to_be_bytes());
+
+        // Offset 248-263: Remaining fields (NULL)
+        for _ in 0..4 {
+            header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
+        }
+
+        // Total: 264 bytes
+        assert_eq!(header.len(), 264, "MOBI header must be exactly 264 bytes");
         header
     }
 
@@ -994,7 +999,7 @@ impl MobiBuilder {
     fn build_record0(&self, text_length: u32, index_record_count: usize) -> Vec<u8> {
         let mut record0 = self.build_mobi_header(text_length, index_record_count);
 
-        // Add EXTH metadata header (after MOBI header at offset 232)
+        // Add EXTH metadata header (after MOBI header at offset 264)
         let exth = self.build_exth_header();
         if !exth.is_empty() {
             record0.extend_from_slice(&exth);
