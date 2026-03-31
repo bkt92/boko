@@ -22,7 +22,11 @@
       "Bash(git tag:*)",
       "Bash(unzip -p /tmp/roundtrip_toc.epub OEBPS/toc.ncx)",
       "Bash(unzip -p tests/fixtures/test_book.epub OEBPS/toc.ncx)",
-      "Bash(./target/release/bokocli info:*)"
+      "Bash(./target/release/bokocli info:*)",
+      "Bash(unzip -p /tmp/roundtrip_toc2.epub OEBPS/toc.ncx)",
+      "Bash(sed 's/text>//;s/<$//')",
+      "Bash(unzip -p /tmp/roundtrip_toc_final.epub OEBPS/toc.ncx)",
+      "Bash(unzip -p /tmp/roundtrip_ncx.epub OEBPS/toc.ncx)"
     ]
   }
 }

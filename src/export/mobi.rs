@@ -7,8 +7,175 @@ use std::io::{self, Seek, Write};
 use std::path::Path;
 
 use crate::model::{Book, Metadata, TocEntry, AnchorTarget};
+use crate::mobi::index::{NcxBuildEntry, build_ncx_indx};
 
 use super::Exporter;
+
+/// Find byte position of an element by its id attribute in HTML.
+fn find_element_position(html: &str, element_id: &str) -> Option<u32> {
+    let pattern = format!("id=\"{}\"", element_id);
+    html.find(&pattern).map(|pos| pos as u32)
+}
+
+/// Flatten hierarchical TOC into a linear list of NcxBuildEntry for MOBI 6.
+///
+/// Walks TocEntry tree recursively, resolves byte positions in the HTML,
+/// calculates section lengths, and sets parent/child indices.
+fn flatten_toc_for_mobi(
+    entries: &[TocEntry],
+    html_content: &str,
+    chapter_positions: &HashMap<String, u32>,
+    text_length: u32,
+) -> Vec<NcxBuildEntry> {
+    struct TempEntry {
+        pos: u32,
+        length: u32,
+        label: String,
+        depth: u32,
+        parent: i32,
+        children: Vec<usize>,
+    }
+
+    let mut result: Vec<TempEntry> = Vec::new();
+
+    fn resolve_position(
+        entry: &TocEntry,
+        html_content: &str,
+        chapter_positions: &HashMap<String, u32>,
+    ) -> u32 {
+        // 1. Try resolved target
+        if let Some(ref target) = entry.target {
+            match target {
+                AnchorTarget::Chapter(chapter_id) => {
+                    let key = format!("ChapterId({})", chapter_id.0);
+                    if let Some(&pos) = chapter_positions.get(&key) {
+                        return pos;
+                    }
+                }
+                AnchorTarget::Internal(node_id) => {
+                    let key = format!("ChapterId({})", node_id.chapter.0);
+                    if let Some(&pos) = chapter_positions.get(&key) {
+                        // Also try to find the specific element within the chapter
+                        // by looking for its id in the HTML
+                        return pos;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // 2. Parse href for fragment and search HTML
+        let fragment = if let Some(hash_pos) = entry.href.find('#') {
+            &entry.href[hash_pos + 1..]
+        } else {
+            ""
+        };
+
+        if fragment.starts_with("filepos") {
+            // MOBI filepos anchor: parse byte position directly
+            if let Ok(pos) = fragment[7..].parse::<u32>() {
+                return pos;
+            }
+        } else if !fragment.is_empty() {
+            // HTML id anchor: search for it in the combined HTML
+            if let Some(pos) = find_element_position(html_content, fragment) {
+                return pos;
+            }
+        }
+
+        // 3. Try matching href to chapter position
+        let key = format!("ChapterId({})", entry.href);
+        if let Some(&pos) = chapter_positions.get(&key) {
+            return pos;
+        }
+
+        0
+    }
+
+    fn flatten_recursive(
+        entries: &[TocEntry],
+        depth: u32,
+        parent_idx: i32,
+        html_content: &str,
+        chapter_positions: &HashMap<String, u32>,
+        result: &mut Vec<TempEntry>,
+    ) {
+        for entry in entries {
+            let current_idx = result.len();
+            let pos = resolve_position(entry, html_content, chapter_positions);
+
+            result.push(TempEntry {
+                pos,
+                length: 0, // calculated later
+                label: entry.title.clone(),
+                depth,
+                parent: parent_idx,
+                children: Vec::new(),
+            });
+
+            if parent_idx >= 0 {
+                result[parent_idx as usize].children.push(current_idx);
+            }
+
+            flatten_recursive(
+                &entry.children,
+                depth + 1,
+                current_idx as i32,
+                html_content,
+                chapter_positions,
+                result,
+            );
+        }
+    }
+
+    flatten_recursive(entries, 0, -1, html_content, chapter_positions, &mut result);
+
+    // Sort by position, then calculate lengths
+    // First, sort entries by position while maintaining index relationships
+    let mut indexed: Vec<(usize, u32)> = result.iter().enumerate().map(|(i, e)| (i, e.pos)).collect();
+    indexed.sort_by_key(|&(_, pos)| pos);
+
+    // Calculate lengths based on sorted order
+    let sorted_positions: Vec<u32> = indexed.iter().map(|&(_, pos)| pos).collect();
+    for (rank, &(orig_idx, pos)) in indexed.iter().enumerate() {
+        let next_pos = sorted_positions.get(rank + 1).copied().unwrap_or(text_length);
+        result[orig_idx].length = next_pos.saturating_sub(pos);
+    }
+
+    // Remove entries with zero length (duplicates at same position)
+    let mut keep = vec![true; result.len()];
+    for i in 1..indexed.len() {
+        if indexed[i].1 == indexed[i - 1].1 {
+            keep[indexed[i].0] = false;
+        }
+    }
+
+    // Re-index: build mapping from old index to new index
+    let mut old_to_new: Vec<i32> = vec![-1; result.len()];
+    let mut new_idx = 0i32;
+    for (i, should_keep) in keep.iter().enumerate() {
+        if *should_keep {
+            old_to_new[i] = new_idx;
+            new_idx += 1;
+        }
+    }
+
+    // Convert TempEntry to NcxBuildEntry with re-indexed parent/child
+    result
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep[*i])
+        .map(|(_, e)| NcxBuildEntry {
+            pos: e.pos,
+            length: e.length,
+            label: e.label,
+            depth: e.depth,
+            parent: if e.parent >= 0 { old_to_new.get(e.parent as usize).copied().unwrap_or(-1) } else { -1 },
+            first_child: e.children.first().and_then(|&c| old_to_new.get(c).copied()).unwrap_or(-1),
+            last_child: e.children.last().and_then(|&c| old_to_new.get(c).copied()).unwrap_or(-1),
+        })
+        .collect()
+}
 
 /// Configuration for MOBI 6 export.
 #[derive(Debug, Clone)]
@@ -604,8 +771,17 @@ impl MobiBuilder {
         // 0b1 = extra multibyte bytes (we don't have these, so 0)
         header.extend_from_slice(&0u32.to_be_bytes());
 
-        // Offset 244-263: KF8 indices (5 x 4 bytes = 20 bytes) - all NULL for MOBI 6
-        for _ in 0..5 {
+        // Offset 244-263: KF8 indices (5 x 4 bytes = 20 bytes)
+        // First field (244): NCX/INDX index record number
+        // Set to point to our INDX header record (after Record 0 + text records)
+        let ncx_index = if !self.toc.is_empty() {
+            1u32 + self.text_records.len() as u32
+        } else {
+            0xFFFFFFFF
+        };
+        header.extend_from_slice(&ncx_index.to_be_bytes());
+        // Remaining 4 KF8 indices - NULL for MOBI 6
+        for _ in 0..4 {
             header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
         }
 
@@ -647,216 +823,27 @@ impl MobiBuilder {
         record0
     }
 
-    /// Build INDX header record (Record 117 in reference file)
-    fn build_indx_header(&self) -> Vec<u8> {
-        let mut indx = Vec::new();
-
-        // Magic (4 bytes)
-        indx.extend_from_slice(b"INDX");
-
-        // Header length (4 bytes) - 192 bytes
-        indx.extend_from_slice(&192u32.to_be_bytes());
-
-        // Header type (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 2
-        indx.extend_from_slice(&2u32.to_be_bytes());
-
-        // IDXT start (4 bytes) - offset to index entries (232)
-        indx.extend_from_slice(&232u32.to_be_bytes());
-
-        // Entry count (4 bytes) - number of entries in INDX (1)
-        indx.extend_from_slice(&1u32.to_be_bytes());
-
-        // Encoding (4 bytes) - UTF-8 (65001)
-        indx.extend_from_slice(&65001u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0xFFFFFFFF
-        indx.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-
-        // Total entries (4 bytes) - total number of TOC entries (12)
-        indx.extend_from_slice(&(self.toc.len() as u32).to_be_bytes());
-
-        // ORDT offset (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // LIGT offset (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Num LIGT (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Num CNCX (4 bytes) - 1 (one CNCX record)
-        indx.extend_from_slice(&1u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Padding to offset 180 (TAGX offset)
-        while indx.len() < 180 {
-            indx.push(0);
+    /// Build TOC index records using the shared mobi::index module.
+    /// Returns (INDX records, CNCX data) or None if no TOC.
+    fn build_toc_index(&self, html_content: &str) -> Option<(Vec<Vec<u8>>, Vec<u8>)> {
+        if self.toc.is_empty() {
+            return None;
         }
 
-        // TAGX offset (4 bytes) - 192 (right after header)
-        indx.extend_from_slice(&192u32.to_be_bytes());
+        let entries = flatten_toc_for_mobi(
+            &self.toc,
+            html_content,
+            &self.chapter_positions,
+            self.text_length,
+        );
 
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
+        eprintln!("MOBI TOC: {} entries with positions", entries.len());
 
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Should be at 192 bytes now
-        assert_eq!(indx.len(), 192);
-
-        // TAGX section (starts at offset 192)
-        indx.extend_from_slice(b"TAGX");
-
-        // First entry offset (4 bytes) - 32
-        indx.extend_from_slice(&32u32.to_be_bytes());
-
-        // Control byte count (4 bytes) - 1
-        indx.extend_from_slice(&1u32.to_be_bytes());
-
-        // TAGX entries (4 bytes each)
-        // Tag 1: Name offset, 1 value, bitmask 0x01
-        indx.extend_from_slice(&[1, 1, 1, 0]);
-        // Tag 2: Offset, 1 value, bitmask 0x02
-        indx.extend_from_slice(&[2, 1, 2, 1]);
-        // Tag 3: Level, 1 value, bitmask 0x04
-        indx.extend_from_slice(&[3, 1, 4, 1]);
-        // Tag 4: Parent offset, 1 value, bitmask 0x08
-        indx.extend_from_slice(&[4, 1, 8, 1]);
-        // Tag 5: First child offset, 1 value, bitmask 0x10
-        indx.extend_from_slice(&[5, 1, 16, 1]);
-        // Tag 6: Last child offset, 1 value, bitmask 0x20
-        indx.extend_from_slice(&[6, 1, 32, 1]);
-
-        // IDXT section (starts at offset 232)
-        // Index entry 1 (placeholder - points to record 118)
-        indx.extend_from_slice(&1u32.to_be_bytes()); // Record 118
-
-        indx
-    }
-
-    /// Build INDX entries record (Record 118 in reference file)
-    fn build_indx_entries(&self) -> Vec<u8> {
-        let mut indx = Vec::new();
-
-        // Magic (4 bytes)
-        indx.extend_from_slice(b"INDX");
-
-        // Header length (4 bytes) - 192 bytes
-        indx.extend_from_slice(&192u32.to_be_bytes());
-
-        // Header type (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 1
-        indx.extend_from_slice(&1u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // IDXT start (4 bytes) - 340 (offset to actual entries)
-        indx.extend_from_slice(&340u32.to_be_bytes());
-
-        // Entry count (4 bytes) - number of TOC entries
-        indx.extend_from_slice(&(self.toc.len() as u32).to_be_bytes());
-
-        // Encoding (4 bytes) - 0xFFFFFFFF
-        indx.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0xFFFFFFFF
-        indx.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        indx.extend_from_slice(&0u32.to_be_bytes());
-
-        // Padding to 192 bytes
-        while indx.len() < 192 {
-            indx.push(0);
+        if entries.is_empty() {
+            return None;
         }
 
-        // IDXT section (starts at offset 340)
-        // Build index entries from TOC with actual file positions
-        let mut name_offset = 0u32;
-
-        for entry in &self.toc {
-            // Control byte (1 byte) - tags 1, 2, 3 present (name, position, level)
-            indx.push(0x07); // 0b00000111 = tags 1, 2, 3 present
-
-            // Tag 1: Name offset (4 bytes) - offset into CNCX strings
-            indx.extend_from_slice(&name_offset.to_be_bytes());
-            name_offset += entry.title.len() as u32 + 1; // +1 for null terminator
-
-            // Tag 2: File position (4 bytes) - position in uncompressed text
-            // Try to find the position from chapter_positions or target
-            let position = if let Some(ref target) = entry.target {
-                match target {
-                    AnchorTarget::Internal(node_id) => {
-                        let chapter_id = format!("ChapterId({})", node_id.chapter.0);
-                        self.chapter_positions.get(&chapter_id).copied().unwrap_or(0)
-                    }
-                    AnchorTarget::Chapter(chapter_id) => {
-                        let chapter_id_str = format!("ChapterId({})", chapter_id.0);
-                        self.chapter_positions.get(&chapter_id_str).copied().unwrap_or(0)
-                    }
-                    _ => 0,
-                }
-            } else {
-                // Try to match href to chapter ID
-                let href_key = format!("ChapterId({})", entry.href);
-                self.chapter_positions.get(&href_key).copied().unwrap_or(0)
-            };
-            indx.extend_from_slice(&position.to_be_bytes());
-
-            // Tag 3: Level (1 byte) - flat TOC for now (can be enhanced later)
-            indx.push(0u8);
-        }
-
-        indx
-    }
-
-    /// Build CNCX strings record (Record 119 in reference file)
-    fn build_cncx_strings(&self) -> Vec<u8> {
-        let mut cncx = Vec::new();
-
-        // Collect all TOC entry titles
-        for entry in &self.toc {
-            cncx.extend_from_slice(entry.title.as_bytes());
-            cncx.push(0); // Null terminator
-        }
-
-        cncx
+        Some(build_ncx_indx(&entries))
     }
 
     /// Build FLIS record (Record 142 in reference file)
@@ -948,18 +935,23 @@ impl MobiBuilder {
     }
 
     /// Write the complete PDB file
-    fn write<W: Write + Seek>(&mut self, writer: &mut W) -> io::Result<()> {
-        // Build navigation/index records
-        let indx_header = self.build_indx_header();
-        let indx_entries = self.build_indx_entries();
-        let cncx_strings = self.build_cncx_strings();
+    fn write<W: Write + Seek>(&mut self, writer: &mut W, html_content: &str) -> io::Result<()> {
+        // Build TOC index records (INDX header + data + CNCX)
+        let toc_index = self.build_toc_index(html_content);
+        let (indx_records, cncx_data) = match &toc_index {
+            Some((records, cncx)) => (records.clone(), cncx.clone()),
+            None => (Vec::new(), Vec::new()),
+        };
+        let index_record_count = indx_records.len() + if cncx_data.is_empty() { 0 } else { 1 };
+
         let flis_record = self.build_flis_record();
         let fcis_record = self.build_fcis_record();
         let eof_marker = self.build_eof_marker();
 
         // Calculate total number of records
-        // Record 0 (headers) + text records + INDX records (3) + image records + FLIS/FCIS/EOF (3)
-        let num_records = 1 + self.text_records.len() + 3 + self.image_records.len() + 3;
+        // Record 0 + text records + index records + CNCX + image records + FLIS/FCIS/EOF
+        let num_records = 1 + self.text_records.len() + index_record_count
+            + self.image_records.len() + 3;
 
         // Build PalmDB header
         let pdb_header = self.build_palmdb_header(num_records as u16);
@@ -981,15 +973,17 @@ impl MobiBuilder {
             offset += record.len();
         }
 
-        // INDX/CNCX record offsets (records 117-119)
-        offsets.push(offset);
-        offset += indx_header.len();
+        // INDX record offsets
+        for record in &indx_records {
+            offsets.push(offset);
+            offset += record.len();
+        }
 
-        offsets.push(offset);
-        offset += indx_entries.len();
-
-        offsets.push(offset);
-        offset += cncx_strings.len();
+        // CNCX record offset
+        if !cncx_data.is_empty() {
+            offsets.push(offset);
+            offset += cncx_data.len();
+        }
 
         // Image record offsets
         for record in &self.image_records {
@@ -1035,9 +1029,12 @@ impl MobiBuilder {
         }
 
         // Write INDX/CNCX records
-        writer.write_all(&indx_header)?;
-        writer.write_all(&indx_entries)?;
-        writer.write_all(&cncx_strings)?;
+        for record in &indx_records {
+            writer.write_all(record)?;
+        }
+        if !cncx_data.is_empty() {
+            writer.write_all(&cncx_data)?;
+        }
 
         // Write image records
         for record in &self.image_records {
@@ -1073,7 +1070,7 @@ impl Exporter for MobiExporter {
         builder.build_text_records(&html_content)?;
 
         // Write file
-        builder.write(writer)?;
+        builder.write(writer, &html_content)?;
 
         // Emit warnings if any
         for warning in &builder.warnings {

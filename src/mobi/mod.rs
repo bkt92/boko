@@ -3,7 +3,7 @@
 mod headers;
 pub mod html_filter;
 pub mod huffcdic;
-pub(crate) mod index;
+pub mod index;
 pub mod palmdoc;
 pub mod parser;
 
