@@ -462,34 +462,33 @@ impl MobiExporter {
         }
 
         // Also convert any remaining href="#fileposNNNNN" to filepos="NNNNN"
-        // Pattern: href="#filepos12345" → filepos="12345"
-        let mut updated = String::new();
-        let mut pos = 0;
-        let bytes = result.as_bytes();
+        // Use string slicing (not byte-by-byte) to preserve UTF-8 encoding
+        let mut output = String::with_capacity(result.len());
+        let mut search_from = 0;
 
-        while pos < bytes.len() {
-            if pos + 15 < bytes.len() && &bytes[pos..pos+15] == b"href=\"#filepos" {
-                // Found href="#filepos... pattern
-                let start = pos + 13; // after 'href="#'
-                let mut end = start;
-                while end < bytes.len() && bytes[end].is_ascii_digit() {
-                    end += 1;
-                }
-                if end < bytes.len() && bytes[end] == b'"' {
-                    // Extract the position number
-                    let num_str = &result[start..end];
-                    updated.push_str("filepos=\"");
-                    updated.push_str(num_str);
-                    updated.push('"');
-                    pos = end + 1; // skip closing quote
-                    continue;
-                }
+        while let Some(idx) = result[search_from..].find("href=\"#filepos") {
+            let abs_idx = search_from + idx;
+            // Copy everything before the match
+            output.push_str(&result[search_from..abs_idx]);
+
+            let after_prefix = abs_idx + 13; // skip 'href="#'
+            let mut end = after_prefix;
+            while end < result.len() && result.as_bytes()[end].is_ascii_digit() {
+                end += 1;
             }
-            updated.push(bytes[pos] as char);
-            pos += 1;
+            if end < result.len() && result.as_bytes()[end] == b'"' {
+                output.push_str("filepos=\"");
+                output.push_str(&result[after_prefix..end]);
+                output.push('"');
+                search_from = end + 1;
+            } else {
+                output.push_str("href=\"#filepos");
+                search_from = after_prefix;
+            }
         }
+        output.push_str(&result[search_from..]);
 
-        updated
+        output
     }
 }
 
@@ -832,8 +831,8 @@ impl MobiBuilder {
     }
 
     /// Build MOBI 6 header (Record 0 content, after PalmDB header)
-    /// Based on calibre's MOBIHeader implementation with 264-byte header
-    fn build_mobi_header(&self, text_length: u32) -> Vec<u8> {
+    /// MOBI 6 uses 232-byte header (0xE8). KF8 uses 264.
+    fn build_mobi_header(&self, text_length: u32, index_record_count: usize) -> Vec<u8> {
         let mut header = Vec::new();
 
         // Offset 0: Compression type (2 bytes) - PalmDoc = 2
@@ -845,8 +844,12 @@ impl MobiBuilder {
         // Offset 4: Text length (4 bytes)
         header.extend_from_slice(&text_length.to_be_bytes());
 
-        // Offset 8: Last text record (2 bytes)
-        let record_count = self.text_records.len() as u16;
+        // Offset 8: Last text record (2 bytes) - 0-indexed
+        let record_count = if self.text_records.is_empty() {
+            0u16
+        } else {
+            (self.text_records.len() - 1) as u16
+        };
         header.extend_from_slice(&record_count.to_be_bytes());
 
         // Offset 10: Text record size (2 bytes) - 4096
@@ -861,8 +864,8 @@ impl MobiBuilder {
         // Offset 16: Ident (4 bytes) - "MOBI"
         header.extend_from_slice(b"MOBI");
 
-        // Offset 20: Header length (4 bytes) - 264 for KF8 format
-        header.extend_from_slice(&264u32.to_be_bytes());
+        // Offset 20: Header length (4 bytes) - 232 (0xE8) for MOBI 6
+        header.extend_from_slice(&232u32.to_be_bytes());
 
         // Offset 24: Book type (4 bytes) - 2 = standard book
         header.extend_from_slice(&2u32.to_be_bytes());
@@ -880,18 +883,31 @@ impl MobiBuilder {
         // Offset 36: File version (4 bytes) - 6 for MOBI 6
         header.extend_from_slice(&6u32.to_be_bytes());
 
-        // Offset 40-79: Meta orth record, meta infl index, extra indices (all NULL = 0xFFFFFFFF)
-        for _ in 0..10 {
-            header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
+        // Offset 40-79: Extra record indices (10 x 4 bytes)
+        // [0] meta orth index (NULL)
+        // [1] meta infl index (NULL)
+        // [2] orth index = NCX record (MOBI 6 readers use this for TOC)
+        // [3] infl index (NULL)
+        // [4-9] unused (NULL)
+        let ncx_index = if index_record_count > 0 {
+            1u32 + self.text_records.len() as u32
+        } else {
+            0xFFFFFFFF
+        };
+
+        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // [0] meta orth
+        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // [1] meta infl
+        header.extend_from_slice(&ncx_index.to_be_bytes());     // [2] orth (NCX)
+        for _ in 0..7 {
+            header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // [3-9]
         }
 
         // Offset 80: First non-text record (4 bytes)
-        // First non-text is after text records
         let first_non_text = (self.text_records.len() as u32) + 1;
         header.extend_from_slice(&first_non_text.to_be_bytes());
 
-        // Offset 84: Title offset (4 bytes) - will update later
-        header.extend_from_slice(&0u32.to_be_bytes()); // placeholder
+        // Offset 84: Title offset (4 bytes) - will update in build_record0
+        header.extend_from_slice(&0u32.to_be_bytes());
 
         // Offset 88: Title length (4 bytes)
         let title_len = self.metadata.title.len() as u32;
@@ -908,11 +924,10 @@ impl MobiBuilder {
         header.extend_from_slice(&6u32.to_be_bytes());
 
         // Offset 108: First resource record (4 bytes)
-        // Images come after: Record 0 + text records + index records (3)
         let first_resource = if self.image_records.is_empty() {
-            0xFFFFFFFF // NULL_INDEX
+            0xFFFFFFFF
         } else {
-            (self.text_records.len() as u32) + 1 + 3
+            (self.text_records.len() as u32) + 1 + index_record_count as u32
         };
         header.extend_from_slice(&first_resource.to_be_bytes());
 
@@ -924,97 +939,62 @@ impl MobiBuilder {
         // Offset 128: EXTH flags (4 bytes) - 0x50 = EXTH present
         header.extend_from_slice(&0x50u32.to_be_bytes());
 
-        // Offset 132-163: Unknown (32 bytes of 0)
-        while header.len() < 164 {
+        // Offset 132-159: Unknown (28 bytes of 0)
+        while header.len() < 160 {
             header.push(0);
         }
+
+        // Offset 160-163: Unknown (4 bytes of 0)
+        header.extend_from_slice(&0u32.to_be_bytes());
 
         // Offset 164-167: Unknown index (NULL)
         header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
 
-        // Offset 168-183: DRM (4 x 4 bytes = 16 bytes)
-        // drm_offset, drm_count, drm_size, drm_flags
+        // Offset 168-183: DRM (4 x 4 bytes)
         header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // drm_offset = NULL
-        header.extend_from_slice(&0u32.to_be_bytes()); // drm_count = 0
-        header.extend_from_slice(&0u32.to_be_bytes()); // drm_size = 0
-        header.extend_from_slice(&0u32.to_be_bytes()); // drm_flags = 0
+        header.extend_from_slice(&0u32.to_be_bytes());
+        header.extend_from_slice(&0u32.to_be_bytes());
+        header.extend_from_slice(&0u32.to_be_bytes());
 
-        // Offset 184-191: Unknown2 (8 bytes)
+        // Offset 184-191: Unknown (8 bytes)
         header.extend_from_slice(&0u64.to_be_bytes());
 
-        // Offset 192: FDST record (4 bytes) - for MOBI 6, first content record
+        // Offset 192-195: FDST first content record
         header.extend_from_slice(&1u32.to_be_bytes());
 
-        // Offset 196: FDST count (4 bytes) - last content record
+        // Offset 196-199: FDST last content record
         header.extend_from_slice(&(self.text_records.len() as u32).to_be_bytes());
 
-        // Offset 200: FCIS record (4 bytes)
-        // FLIS is written first, then FCIS: FLIS at N+4+M, FCIS at N+4+M+1
-        let flis_record = (self.text_records.len() as u32) + 1 + 3 + self.image_records.len() as u32;
+        // Offset 200-207: FCIS record index + count
+        let flis_record = (self.text_records.len() as u32) + 1 + index_record_count as u32
+            + self.image_records.len() as u32;
         let fcis_record = flis_record + 1;
         header.extend_from_slice(&fcis_record.to_be_bytes());
+        header.extend_from_slice(&1u32.to_be_bytes()); // count
 
-        // Offset 204: FCIS count (4 bytes)
-        header.extend_from_slice(&1u32.to_be_bytes());
-
-        // Offset 208: FLIS record (4 bytes)
+        // Offset 208-215: FLIS record index + count
         header.extend_from_slice(&flis_record.to_be_bytes());
+        header.extend_from_slice(&1u32.to_be_bytes()); // count
 
-        // Offset 212: FLIS count (4 bytes)
-        header.extend_from_slice(&1u32.to_be_bytes());
-
-        // Offset 216-223: Unknown3 (8 bytes)
+        // Offset 216-223: Unknown (8 bytes)
         header.extend_from_slice(&0u64.to_be_bytes());
 
-        // Offset 224: SRCS record (4 bytes) - NULL
+        // Offset 224-227: SRCS record (NULL)
         header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
 
-        // Offset 228: SRCS count (4 bytes) - 0
+        // Offset 228-231: SRCS count (0)
         header.extend_from_slice(&0u32.to_be_bytes());
 
-        // Offset 232-239: Unknown4 (8 bytes of 0xFF)
-        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-
-        // Offset 240: Extra data flags (4 bytes)
-        // 0b1 = extra multibyte bytes (we don't have these, so 0)
-        header.extend_from_slice(&0u32.to_be_bytes());
-
-        // Offset 244-263: KF8 indices (5 x 4 bytes = 20 bytes)
-        // First field (244): NCX/INDX index record number
-        // Set to point to our INDX header record (after Record 0 + text records)
-        let ncx_index = if !self.toc.is_empty() {
-            1u32 + self.text_records.len() as u32
-        } else {
-            0xFFFFFFFF
-        };
-        header.extend_from_slice(&ncx_index.to_be_bytes());
-        // Remaining 4 KF8 indices - NULL for MOBI 6
-        for _ in 0..4 {
-            header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-        }
-
-        // Offset 264: Unknown5 (4 bytes of 0xFF)
-        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-
-        // Offset 268: Unknown6 (4 bytes of 0)
-        header.extend_from_slice(&0u32.to_be_bytes());
-
-        // Offset 272: Unknown7 (4 bytes of 0xFF)
-        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-
-        // Offset 276: Unknown8 (4 bytes of 0)
-        header.extend_from_slice(&0u32.to_be_bytes());
-
-        // Offset 280: EXTH header comes after this
+        // Total: 232 bytes (0xE8) — end of MOBI 6 header
+        assert_eq!(header.len(), 232, "MOBI 6 header must be exactly 232 bytes");
         header
     }
 
     /// Build complete Record 0 with MOBI header, EXTH, and title
-    fn build_record0(&self, text_length: u32) -> Vec<u8> {
-        let mut record0 = self.build_mobi_header(text_length);
+    fn build_record0(&self, text_length: u32, index_record_count: usize) -> Vec<u8> {
+        let mut record0 = self.build_mobi_header(text_length, index_record_count);
 
-        // Add EXTH metadata header (starts at offset 280)
+        // Add EXTH metadata header (after MOBI header at offset 232)
         let exth = self.build_exth_header();
         if !exth.is_empty() {
             record0.extend_from_slice(&exth);
@@ -1166,7 +1146,7 @@ impl MobiBuilder {
         let pdb_header = self.build_palmdb_header(num_records as u16);
 
         // Build Record 0 (MOBI header + EXTH + title)
-        let record0 = self.build_record0(self.text_length);
+        let record0 = self.build_record0(self.text_length, index_record_count);
 
         // Calculate record offsets
         let mut offsets = Vec::new();
