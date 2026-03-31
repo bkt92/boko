@@ -388,15 +388,12 @@ impl MobiExporter {
         let mut html = String::new();
         let mut chapter_positions = HashMap::new();
 
-        // Get spine (reading order) - collect entries to avoid borrow checker
+        // Get spine (reading order)
         let spine_entries: Vec<_> = book.spine().to_vec();
 
         for (i, entry) in spine_entries.iter().enumerate() {
             // Record the position where this chapter starts (before inserting anchor)
             let position = html.len() as u32;
-
-            // Get chapter ID as string for position tracking
-            let chapter_id = format!("{:?}", entry.id);
 
             match book.load_raw(entry.id) {
                 Ok(data) => {
@@ -409,12 +406,30 @@ impl MobiExporter {
                     }
 
                     // Insert anchor tag at chapter start for TOC linking
-                    // MOBI format uses fileposNNNNN style anchors
                     let anchor = format!("<a id=\"filepos{}\" />", position);
                     html.push_str(&anchor);
 
-                    // Store the position for this chapter
+                    // Store position keyed by ChapterId (for TOC resolution)
+                    let chapter_id = format!("{:?}", entry.id);
                     chapter_positions.insert(chapter_id, position);
+
+                    // Also store by source path and its variants (for link resolution)
+                    if let Some(source_path) = book.source_id(entry.id) {
+                        chapter_positions.insert(source_path.to_string(), position);
+
+                        // Store filename only (e.g., "chapter1.xhtml" from "OEBPS/text/chapter1.xhtml")
+                        if let Some(fname) = Path::new(source_path).file_name() {
+                            chapter_positions.insert(fname.to_string_lossy().to_string(), position);
+                        }
+
+                        // Store relative path without top-level dir
+                        // "OEBPS/text/chapter1.xhtml" → "text/chapter1.xhtml"
+                        let parts: Vec<_> = source_path.split('/').collect();
+                        if parts.len() > 1 {
+                            let relative = parts[1..].join("/");
+                            chapter_positions.insert(relative, position);
+                        }
+                    }
 
                     html.push_str(&chapter_html);
                 }
@@ -429,64 +444,72 @@ impl MobiExporter {
 
     /// Resolve internal links (href) to MOBI filepos references.
     ///
-    /// Converts `<a href="chapter.xhtml">` and `<a href="chapter.xhtml#section">`
-    /// to `<a filepos="NNNNN">` where NNNN is the byte position of the target
-    /// chapter anchor in the combined HTML.
+    /// Converts hrefs in the body HTML to MOBI `<a filepos="NNNNN">` format:
+    /// - `href="chapter.xhtml"` → `filepos="NNNNN"` (chapter links)
+    /// - `href="chapter.xhtml#section"` → `filepos="NNNNN"` (anchor links)
+    /// - `href="#fileposNNNNN"` → `filepos="NNNNN"` (existing MOBI anchors)
+    /// - `href="content.html#fileposNNNNN"` → `filepos="NNNNN"` (MOBI roundtrip)
     fn resolve_internal_links(&self, html: &str, chapter_positions: &HashMap<String, u32>) -> String {
         let mut result = html.to_string();
 
-        // Build a map of href patterns to filepos values
-        for (chapter_id, &position) in chapter_positions {
-            // chapter_id is like "ChapterId(chapter1.xhtml)"
-            // Extract the raw chapter name
-            let raw_name = if chapter_id.starts_with("ChapterId(") && chapter_id.ends_with(')') {
-                &chapter_id[10..chapter_id.len() - 1]
-            } else {
+        // Phase 1: Convert chapter hrefs to filepos
+        // For each known chapter path, replace href="path" and href="path#frag" with filepos
+        let mut replacements: Vec<(String, String)> = Vec::new();
+        for (path_key, &position) in chapter_positions {
+            if path_key.starts_with("ChapterId(") {
                 continue;
-            };
+            }
+            let filepos_attr = format!("filepos=\"{}\"", position);
+            // Exact match: href="path_key" or href='path_key'
+            replacements.push((format!("href=\"{}\"", path_key), filepos_attr.clone()));
+            replacements.push((format!("href='{}'", path_key), filepos_attr.clone()));
+        }
 
-            // Try to match various href patterns pointing to this chapter
-            let filepos = format!("filepos=\"{}\"", position);
+        // Sort replacements by length descending so longer paths match first
+        replacements.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
 
-            // Pattern: href="chapter1.xhtml" or href="text/chapter1.xhtml"
-            let patterns = [
-                format!("href=\"{}\"", raw_name),
-                format!("href='{}'", raw_name),
-            ];
+        for (pattern, replacement) in &replacements {
+            result = result.replace(pattern, replacement);
+        }
 
-            for pattern in &patterns {
-                if result.contains(pattern) {
-                    result = result.replace(pattern, &filepos);
+        // Phase 2: Convert href with #filepos fragments
+        // Handles: href="#fileposNNNNN" and href="content.html#fileposNNNNN"
+        // and href="any_chapter_path#fileposNNNNN"
+        let mut output = String::with_capacity(result.len());
+        let bytes = result.as_bytes();
+        let mut pos = 0;
+
+        while pos < bytes.len() {
+            // Look for href= pattern
+            if pos + 5 < bytes.len() && &bytes[pos..pos+5] == b"href=" {
+                let quote_start = pos + 5;
+                if quote_start < bytes.len() && (bytes[quote_start] == b'"' || bytes[quote_start] == b'\'') {
+                    let quote = bytes[quote_start];
+                    // Find closing quote
+                    let mut close = quote_start + 1;
+                    while close < bytes.len() && bytes[close] != quote {
+                        close += 1;
+                    }
+                    if close < bytes.len() {
+                        let href_content = &result[quote_start + 1..close];
+                        // Check if this href contains #filepos followed by digits
+                        if let Some(hash_pos) = href_content.find("#filepos") {
+                            let after_filepos = &href_content[hash_pos + 8..];
+                            if after_filepos.chars().all(|c| c.is_ascii_digit()) && !after_filepos.is_empty() {
+                                // Replace entire href="...#fileposNNNNN" with filepos="NNNNN"
+                                output.push_str("filepos=\"");
+                                output.push_str(after_filepos);
+                                output.push('"');
+                                pos = close + 1;
+                                continue;
+                            }
+                        }
+                    }
                 }
             }
+            output.push(bytes[pos] as char);
+            pos += 1;
         }
-
-        // Also convert any remaining href="#fileposNNNNN" to filepos="NNNNN"
-        // Use string slicing (not byte-by-byte) to preserve UTF-8 encoding
-        let mut output = String::with_capacity(result.len());
-        let mut search_from = 0;
-
-        while let Some(idx) = result[search_from..].find("href=\"#filepos") {
-            let abs_idx = search_from + idx;
-            // Copy everything before the match
-            output.push_str(&result[search_from..abs_idx]);
-
-            let after_prefix = abs_idx + 13; // skip 'href="#'
-            let mut end = after_prefix;
-            while end < result.len() && result.as_bytes()[end].is_ascii_digit() {
-                end += 1;
-            }
-            if end < result.len() && result.as_bytes()[end] == b'"' {
-                output.push_str("filepos=\"");
-                output.push_str(&result[after_prefix..end]);
-                output.push('"');
-                search_from = end + 1;
-            } else {
-                output.push_str("href=\"#filepos");
-                search_from = after_prefix;
-            }
-        }
-        output.push_str(&result[search_from..]);
 
         output
     }
