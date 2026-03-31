@@ -121,7 +121,11 @@ impl MobiExporter {
             }
         }
 
-        eprintln!("MOBI: Replaced {} image references with recindex format", replaced);
+        eprintln!(
+            "MOBI: Stored {} images, replaced {} src attributes with recindex",
+            builder.image_path_to_record.len(),
+            replaced
+        );
         result
     }
 
