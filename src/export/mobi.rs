@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{self, Seek, Write};
 use std::path::Path;
 
-use crate::model::{Book, Metadata, TocEntry};
+use crate::model::{Book, Metadata, TocEntry, AnchorTarget};
 
 use super::Exporter;
 
@@ -129,17 +129,33 @@ impl MobiExporter {
         result
     }
 
-    fn collect_html_content(&self, book: &mut Book) -> io::Result<String> {
+    fn collect_html_content(&self, book: &mut Book) -> io::Result<(String, HashMap<String, u32>)> {
         let mut html = String::new();
+        let mut chapter_positions = HashMap::new();
 
         // Get spine (reading order) - collect entries to avoid borrow checker
         let spine_entries: Vec<_> = book.spine().to_vec();
 
         for entry in spine_entries {
+            // Record the position where this chapter starts (before inserting anchor)
+            let position = html.len() as u32;
+
+            // Get chapter ID as string for position tracking
+            let chapter_id = format!("{:?}", entry.id);
+
             match book.load_raw(entry.id) {
                 Ok(data) => {
                     // Convert bytes to string, ignoring encoding issues
                     let chapter_html = String::from_utf8_lossy(&data);
+
+                    // Insert anchor tag at chapter start for TOC linking
+                    // MOBI format uses fileposNNNNN style anchors
+                    let anchor = format!("<a id=\"filepos{}\" />", position);
+                    html.push_str(&anchor);
+
+                    // Store the position for this chapter
+                    chapter_positions.insert(chapter_id, position);
+
                     html.push_str(&chapter_html);
                 }
                 Err(e) => {
@@ -148,7 +164,7 @@ impl MobiExporter {
             }
         }
 
-        Ok(html)
+        Ok((html, chapter_positions))
     }
 }
 
@@ -178,8 +194,9 @@ struct MobiBuilder {
     /// Book metadata
     metadata: Metadata,
     /// Table of contents
-    #[allow(dead_code)] // TODO: Use when build_ncx_index is fully implemented
     toc: Vec<TocEntry>,
+    /// Chapter ID to byte position mapping (for TOC resolution)
+    chapter_positions: HashMap<String, u32>,
     /// Collected warnings
     warnings: Vec<String>,
     /// Configuration
@@ -202,6 +219,7 @@ impl MobiBuilder {
             image_path_to_record: HashMap::new(),
             metadata,
             toc,
+            chapter_positions: HashMap::new(),
             warnings: Vec::new(),
             config,
         })
@@ -789,30 +807,40 @@ impl MobiBuilder {
         }
 
         // IDXT section (starts at offset 340)
-        // Build index entries from TOC
-        for (i, _entry) in self.toc.iter().enumerate() {
-            // Control byte (1 byte) - all tags present
-            indx.push(0x3F); // 0b00111111 = tags 1-6 present
+        // Build index entries from TOC with actual file positions
+        let mut name_offset = 0u32;
 
-            // Tag 1: Name offset (variable-width int)
-            // For now, use entry index as placeholder
-            let name_offset = (i * 4) as u32;
+        for entry in &self.toc {
+            // Control byte (1 byte) - tags 1, 2, 3 present (name, position, level)
+            indx.push(0x07); // 0b00000111 = tags 1, 2, 3 present
+
+            // Tag 1: Name offset (4 bytes) - offset into CNCX strings
             indx.extend_from_slice(&name_offset.to_be_bytes());
+            name_offset += entry.title.len() as u32 + 1; // +1 for null terminator
 
-            // Tag 2: File position (4 bytes) - placeholder
-            indx.extend_from_slice(&0u32.to_be_bytes());
+            // Tag 2: File position (4 bytes) - position in uncompressed text
+            // Try to find the position from chapter_positions or target
+            let position = if let Some(ref target) = entry.target {
+                match target {
+                    AnchorTarget::Internal(node_id) => {
+                        let chapter_id = format!("ChapterId({})", node_id.chapter.0);
+                        self.chapter_positions.get(&chapter_id).copied().unwrap_or(0)
+                    }
+                    AnchorTarget::Chapter(chapter_id) => {
+                        let chapter_id_str = format!("ChapterId({})", chapter_id.0);
+                        self.chapter_positions.get(&chapter_id_str).copied().unwrap_or(0)
+                    }
+                    _ => 0,
+                }
+            } else {
+                // Try to match href to chapter ID
+                let href_key = format!("ChapterId({})", entry.href);
+                self.chapter_positions.get(&href_key).copied().unwrap_or(0)
+            };
+            indx.extend_from_slice(&position.to_be_bytes());
 
-            // Tag 3: Level (1 byte) - use placeholder (TocEntry doesn't have level field)
+            // Tag 3: Level (1 byte) - flat TOC for now (can be enhanced later)
             indx.push(0u8);
-
-            // Tag 4: Parent offset (1 byte) - placeholder
-            indx.push(0xFF);
-
-            // Tag 5: First child offset (1 byte) - placeholder
-            indx.push(0xFF);
-
-            // Tag 6: Last child offset (1 byte) - placeholder
-            indx.push(0xFF);
         }
 
         indx
@@ -1034,8 +1062,9 @@ impl Exporter for MobiExporter {
         // Process images from book assets
         builder.process_images(book)?;
 
-        // Get HTML content from book
-        let html_content = self.collect_html_content(book)?;
+        // Get HTML content from book and track chapter positions
+        let (html_content, chapter_positions) = self.collect_html_content(book)?;
+        builder.chapter_positions = chapter_positions;
 
         // Update image references in HTML to use MOBI record indices
         let html_content = self.update_image_references(&html_content, &builder);

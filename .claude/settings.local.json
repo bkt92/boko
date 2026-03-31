@@ -15,7 +15,14 @@
       "Bash(rustc --print sysroot)",
       "Bash(grep -r 'pub struct Frame' C:/Users/buikh/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/image-0.25.*/src/)",
       "Bash(curl -s -o test.jpg \"https://raw.githubusercontent.com/image-rs/image/master/examples/fractal.jpg\")",
-      "Bash(wget -q -O test.jpg \"https://raw.githubusercontent.com/image-rs/image/master/examples/fractal.jpg\")"
+      "Bash(wget -q -O test.jpg \"https://raw.githubusercontent.com/image-rs/image/master/examples/fractal.jpg\")",
+      "Bash(cargo build:*)",
+      "Bash(./target/release/bokocli convert:*)",
+      "Bash(git push:*)",
+      "Bash(git tag:*)",
+      "Bash(unzip -p /tmp/roundtrip_toc.epub OEBPS/toc.ncx)",
+      "Bash(unzip -p tests/fixtures/test_book.epub OEBPS/toc.ncx)",
+      "Bash(./target/release/bokocli info:*)"
     ]
   }
 }
