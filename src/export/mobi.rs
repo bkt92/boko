@@ -392,9 +392,6 @@ impl MobiExporter {
         let spine_entries: Vec<_> = book.spine().to_vec();
 
         for (i, entry) in spine_entries.iter().enumerate() {
-            // Record the position where this chapter starts (before inserting anchor)
-            let position = html.len() as u32;
-
             match book.load_raw(entry.id) {
                 Ok(data) => {
                     // Convert bytes to string, ignoring encoding issues
@@ -404,6 +401,9 @@ impl MobiExporter {
                     if i > 0 {
                         html.push_str("<mbp:pagebreak/>");
                     }
+
+                    // Record position AFTER pagebreak, at the anchor/content start
+                    let position = html.len() as u32;
 
                     // Insert anchor tag at chapter start for TOC linking
                     let anchor = format!("<a id=\"filepos{}\" />", position);
@@ -472,44 +472,46 @@ impl MobiExporter {
             result = result.replace(pattern, replacement);
         }
 
-        // Phase 2: Convert href with #filepos fragments
-        // Handles: href="#fileposNNNNN" and href="content.html#fileposNNNNN"
-        // and href="any_chapter_path#fileposNNNNN"
+        // Phase 2: Convert href with #filepos fragments using string search
+        // to avoid corrupting multibyte UTF-8 characters.
+        // Handles: href="#fileposNNNNN", href="content.html#fileposNNNNN",
+        // and any href containing #filepos followed by digits.
         let mut output = String::with_capacity(result.len());
-        let bytes = result.as_bytes();
-        let mut pos = 0;
+        let mut search_from = 0;
 
-        while pos < bytes.len() {
-            // Look for href= pattern
-            if pos + 5 < bytes.len() && &bytes[pos..pos+5] == b"href=" {
-                let quote_start = pos + 5;
-                if quote_start < bytes.len() && (bytes[quote_start] == b'"' || bytes[quote_start] == b'\'') {
-                    let quote = bytes[quote_start];
-                    // Find closing quote
-                    let mut close = quote_start + 1;
-                    while close < bytes.len() && bytes[close] != quote {
-                        close += 1;
-                    }
-                    if close < bytes.len() {
-                        let href_content = &result[quote_start + 1..close];
-                        // Check if this href contains #filepos followed by digits
-                        if let Some(hash_pos) = href_content.find("#filepos") {
-                            let after_filepos = &href_content[hash_pos + 8..];
-                            if after_filepos.chars().all(|c| c.is_ascii_digit()) && !after_filepos.is_empty() {
-                                // Replace entire href="...#fileposNNNNN" with filepos="NNNNN"
-                                output.push_str("filepos=\"");
-                                output.push_str(after_filepos);
-                                output.push('"');
-                                pos = close + 1;
-                                continue;
-                            }
-                        }
+        while let Some(idx) = result[search_from..].find("href=\"") {
+            let abs_idx = search_from + idx;
+            // Copy everything before href="
+            output.push_str(&result[search_from..abs_idx]);
+
+            let after_quote = abs_idx + 6; // skip 'href="'
+            // Find closing quote
+            if let Some(close_rel) = result[after_quote..].find('"') {
+                let close = after_quote + close_rel;
+                let href_content = &result[after_quote..close];
+
+                if let Some(hash_pos) = href_content.find("#filepos") {
+                    let after_filepos = &href_content[hash_pos + 8..];
+                    if after_filepos.chars().all(|c| c.is_ascii_digit()) && !after_filepos.is_empty() {
+                        output.push_str("filepos=\"");
+                        output.push_str(after_filepos);
+                        output.push('"');
+                        search_from = close + 1;
+                        continue;
                     }
                 }
+                // Not a filepos href - copy as-is
+                output.push_str("href=\"");
+                output.push_str(href_content);
+                output.push('"');
+                search_from = close + 1;
+            } else {
+                // No closing quote - copy as-is and move on
+                output.push_str("href=\"");
+                search_from = after_quote;
             }
-            output.push(bytes[pos] as char);
-            pos += 1;
         }
+        output.push_str(&result[search_from..]);
 
         output
     }
