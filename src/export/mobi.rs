@@ -722,18 +722,13 @@ impl MobiBuilder {
                 let record_index = self.image_records.len() as u32 + 1;
                 self.image_records.push(image_data);
 
-                // Detect cover image
-                if self.cover_record_index.is_none() {
-                    let filename_lower = path_str.to_lowercase();
-                    let is_cover = filename_lower.contains("cover")
-                        || self.metadata.cover_image.as_ref().is_some_and(|c| {
-                            path_str.ends_with(&c.replace('\\', "/"))
-                                || path_str.ends_with(&c.replace('/', "\\"))
-                                || filename_lower.ends_with(&c.to_lowercase().replace('\\', "/"))
-                        });
-                    if is_cover {
-                        self.cover_record_index = Some(record_index);
-                    }
+                // Detect cover image by matching against metadata.cover_image
+                if self.cover_record_index.is_none()
+                    && self.metadata.cover_image.as_ref().is_some_and(|c| {
+                        paths_match(&path_str, c)
+                    })
+                {
+                    self.cover_record_index = Some(record_index);
                 }
 
                 // Store the relative path for HTML replacement
@@ -1355,6 +1350,13 @@ impl Exporter for MobiExporter {
 
         Ok(())
     }
+}
+
+/// Check if two asset paths refer to the same file, normalizing slashes and case.
+fn paths_match(asset_path: &str, cover_path: &str) -> bool {
+    let a = asset_path.replace('\\', "/").to_lowercase();
+    let c = cover_path.replace('\\', "/").to_lowercase();
+    a == c || a.ends_with(&format!("/{}", c)) || c.ends_with(&format!("/{}", a))
 }
 
 #[cfg(test)]
