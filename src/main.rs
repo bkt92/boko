@@ -556,10 +556,19 @@ fn convert(
             .map_err(|e| format!("Write failed: {e}"))?;
     } else {
         let output_path = output.unwrap();
-        let mut file = std::fs::File::create(output_path)
-            .map_err(|e| format!("Failed to create output: {e}"))?;
-        book.export(output_format, &mut file)
-            .map_err(|e| format!("Conversion failed: {e}"))?;
+        if output_format == Format::Markdown {
+            // Use path-aware export that extracts images to _img folder
+            use std::path::Path;
+            use boko::export::MarkdownExporter;
+            MarkdownExporter::new()
+                .export_to_path(&mut book, Path::new(output_path))
+                .map_err(|e| format!("Conversion failed: {e}"))?;
+        } else {
+            let mut file = std::fs::File::create(output_path)
+                .map_err(|e| format!("Failed to create output: {e}"))?;
+            book.export(output_format, &mut file)
+                .map_err(|e| format!("Conversion failed: {e}"))?;
+        }
     }
 
     if !quiet && !to_stdout {
