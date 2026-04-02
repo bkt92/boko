@@ -401,6 +401,23 @@ impl MarkdownImporter {
                 let inline_id = builder.push_node(Role::Inline);
                 builder.chapter.node_mut(inline_id).unwrap().style = style_id;
             }
+            Tag::Strikethrough => {
+                // Create Inline node with line-through style
+                let style = ComputedStyle {
+                    text_decoration_line_through: true,
+                    ..Default::default()
+                };
+                let style_id = builder.chapter.styles.intern(style);
+                let inline_id = builder.push_node(Role::Inline);
+                builder.chapter.node_mut(inline_id).unwrap().style = style_id;
+            }
+            Tag::FootnoteDefinition(label) => {
+                let node_id = builder.push_node(Role::Footnote);
+                builder
+                    .chapter
+                    .semantics
+                    .set_id(node_id, &format!("fn-{}", label));
+            }
             // Link and Image are handled directly in event loop
             _ => {} // Ignore other tags
         }
@@ -422,8 +439,11 @@ impl MarkdownImporter {
             | TagEnd::TableCell => {
                 builder.pop_node();
             }
-            TagEnd::Emphasis | TagEnd::Strong => {
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                 // Already handled in start_tag
+            }
+            TagEnd::FootnoteDefinition => {
+                builder.pop_node();
             }
             TagEnd::Link | TagEnd::Image => {
                 // Handled directly in event loop
@@ -671,6 +691,28 @@ impl Importer for MarkdownImporter {
                 }
                 Event::SoftBreak | Event::HardBreak => {
                     builder.push_node(Role::Break);
+                    builder.pop_node();
+                }
+                Event::Html(html) => {
+                    // Block-level HTML: preserve as raw HTML in a Container node
+                    builder.push_node(Role::Container);
+                    builder.text_buffer.push_str(&html);
+                    builder.flush_text();
+                    builder.pop_node();
+                }
+                Event::InlineHtml(html) => {
+                    // Inline HTML (e.g., <br>, <sup>, <sub>): preserve in text buffer
+                    builder.text_buffer.push_str(&html);
+                }
+                Event::FootnoteReference(name) => {
+                    // Footnote reference: create a link to the footnote definition
+                    let node_id = builder.push_node(Role::Link);
+                    builder
+                        .chapter
+                        .semantics
+                        .set_href(node_id, &format!("#fn-{}", name));
+                    builder.text_buffer.push_str(&format!("[^{}]", name));
+                    builder.flush_text();
                     builder.pop_node();
                 }
                 _ => {} // Ignore other events for now
