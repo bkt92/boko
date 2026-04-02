@@ -454,6 +454,13 @@ impl MarkdownImporter {
     }
 }
 
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 fn file_stem(path: &Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
@@ -554,7 +561,32 @@ impl Importer for MarkdownImporter {
                 format!("Chapter {} not found", id.0),
             )
         })?;
-        Ok(self.content.as_bytes()[range.start..range.end].to_vec())
+
+        let content = &self.content[range.start..range.end];
+
+        // Render markdown to HTML so downstream exporters get valid HTML
+        let parser = pulldown_cmark::Parser::new(content);
+        let mut html_output = String::new();
+        pulldown_cmark::html::push_html(&mut html_output, parser);
+
+        let title = &self.metadata.title;
+        let wrapped = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>{}</title>
+<meta charset="utf-8"/>
+</head>
+<body>
+{}
+</body>
+</html>"#,
+            html_escape(title),
+            html_output
+        );
+
+        Ok(wrapped.into_bytes())
     }
 
     fn list_assets(&self) -> &[PathBuf] {
