@@ -10,8 +10,8 @@ use zip::CompressionMethod;
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
-use crate::model::{Book, TocEntry};
 use crate::mobi::html_filter::strip_mobi_artifacts;
+use crate::model::{Book, TocEntry};
 
 use super::Exporter;
 
@@ -135,9 +135,8 @@ impl EpubExporter {
             let id = format!("asset_{}", i);
             let href = format!("OEBPS/{}", sanitize_path(&path_str));
 
-            let is_cover = cover_image_path.is_some_and(|cip| {
-                sanitize_path(cip) == sanitize_path(&path_str)
-            });
+            let is_cover =
+                cover_image_path.is_some_and(|cip| sanitize_path(cip) == sanitize_path(&path_str));
             let properties = if is_cover {
                 Some("cover-image".to_string())
             } else {
@@ -262,9 +261,8 @@ impl EpubExporter {
             let id = format!("asset_{}", asset_idx);
             let href = format!("OEBPS/{}", sanitize_path(asset_path));
 
-            let is_cover = cover_image_path.is_some_and(|cip| {
-                sanitize_path(cip) == sanitize_path(asset_path)
-            });
+            let is_cover =
+                cover_image_path.is_some_and(|cip| sanitize_path(cip) == sanitize_path(asset_path));
             let properties = if is_cover {
                 Some("cover-image".to_string())
             } else {
@@ -518,11 +516,14 @@ fn generate_opf(
 
     // Cover image reference (EPUB2-style <meta name="cover"> for broad compatibility)
     // Find the manifest item marked as cover-image
-    let cover_manifest_id = manifest.iter().find(|item| {
-        item.properties
-            .as_deref()
-            .is_some_and(|p| p.split_ascii_whitespace().any(|prop| prop == "cover-image"))
-    }).map(|item| item.id.clone());
+    let cover_manifest_id = manifest
+        .iter()
+        .find(|item| {
+            item.properties
+                .as_deref()
+                .is_some_and(|p| p.split_ascii_whitespace().any(|prop| prop == "cover-image"))
+        })
+        .map(|item| item.id.clone());
 
     if let Some(ref cover_id) = cover_manifest_id {
         opf.push_str(&format!(

@@ -10,13 +10,20 @@ fn main() -> io::Result<()> {
     // Step 1: Import EPUB to get original IR
     println!("Step 1: EPUB → IR (original)");
     let epub_to_ir = Command::new("target/release/bokocli")
-        .args(&["convert", "tests/fixtures/test_book.epub", "/tmp/original.mobi"])
+        .args(&[
+            "convert",
+            "tests/fixtures/test_book.epub",
+            "/tmp/original.mobi",
+        ])
         .output()
         .expect("Failed to convert EPUB to MOBI");
 
     if !epub_to_ir.status.success() {
         eprintln!("Error: {}", String::from_utf8_lossy(&epub_to_ir.stderr));
-        return Err(io::Error::new(io::ErrorKind::Other, "EPUB to MOBI conversion failed"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "EPUB to MOBI conversion failed",
+        ));
     };
 
     // Now convert that MOBI back to EPUB (this should work)
@@ -29,7 +36,10 @@ fn main() -> io::Result<()> {
         Ok(output) => output,
         Err(e) => {
             eprintln!("Failed to execute: {}", e);
-            return Err(io::Error::new(io::ErrorKind::Other, "Command execution failed"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Command execution failed",
+            ));
         }
     };
 
@@ -49,7 +59,10 @@ fn main() -> io::Result<()> {
 
     let mobi_epub_result = mobi_to_epub;
     if !mobi_epub_result.status.success() {
-        eprintln!("Error: {}", String::from_utf8_lossy(&mobi_epub_result.stderr));
+        eprintln!(
+            "Error: {}",
+            String::from_utf8_lossy(&mobi_epub_result.stderr)
+        );
         println!("\n❌ Round-trip failed as expected");
         println!("This confirms the PalmDoc decompression issue");
     } else {
@@ -66,7 +79,10 @@ fn main() -> io::Result<()> {
     println!("\n=== File Size Comparison ===");
     println!("Original EPUB: {} bytes", epub_data.len());
     println!("Generated MOBI: {} bytes", mobi_data.len());
-    println!("Size ratio: {:.2}%", (mobi_data.len() as f64 / epub_data.len() as f64) * 100.0);
+    println!(
+        "Size ratio: {:.2}%",
+        (mobi_data.len() as f64 / epub_data.len() as f64) * 100.0
+    );
 
     // Extract and compare HTML content
     println!("\n=== HTML Content Comparison ===");
@@ -93,7 +109,8 @@ fn main() -> io::Result<()> {
 
     // Analyze the text length field
     let num_records = u16::from_be_bytes([mobi_data[76], mobi_data[77]]);
-    let mobi_off = u32::from_be_bytes([mobi_data[78], mobi_data[79], mobi_data[80], mobi_data[81]]) as usize;
+    let mobi_off =
+        u32::from_be_bytes([mobi_data[78], mobi_data[79], mobi_data[80], mobi_data[81]]) as usize;
     let text_len = u32::from_be_bytes([
         mobi_data[mobi_off + 4],
         mobi_data[mobi_off + 5],
@@ -105,16 +122,22 @@ fn main() -> io::Result<()> {
     println!("Number of records: {}", num_records);
     println!("Text length field: {} bytes", text_len);
     println!("Original HTML: {} bytes", original_html_len);
-    println!("Difference: {} bytes", text_len as i64 - original_html_len as i64);
+    println!(
+        "Difference: {} bytes",
+        text_len as i64 - original_html_len as i64
+    );
 
     // Calculate what the text length should be
-    let expected_len = if text_len > original_html_len as u32 {
-        println!("\n⚠️  Text length is {} bytes larger than HTML", text_len - original_html_len as u32);
+    let _expected_len = if text_len > original_html_len as u32 {
+        println!(
+            "\n⚠️  Text length is {} bytes larger than HTML",
+            text_len - original_html_len as u32
+        );
         println!("   This will cause PalmDoc decompression to fail");
         println!("   The decompressor expects more bytes than available");
     } else {
         println!("\n✓ Text length is appropriate");
-    }
+    };
 
     Ok(())
 }

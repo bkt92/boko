@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::io::{self, Seek, Write};
 use std::path::Path;
 
-use crate::model::{Book, Metadata, TocEntry, AnchorTarget};
 use crate::mobi::index::{NcxBuildEntry, build_ncx_indx};
+use crate::model::{AnchorTarget, Book, Metadata, TocEntry};
 
 use super::Exporter;
 
@@ -222,13 +222,17 @@ fn flatten_toc_for_mobi(
 
     // Sort by position, then calculate lengths
     // First, sort entries by position while maintaining index relationships
-    let mut indexed: Vec<(usize, u32)> = result.iter().enumerate().map(|(i, e)| (i, e.pos)).collect();
+    let mut indexed: Vec<(usize, u32)> =
+        result.iter().enumerate().map(|(i, e)| (i, e.pos)).collect();
     indexed.sort_by_key(|&(_, pos)| pos);
 
     // Calculate lengths based on sorted order
     let sorted_positions: Vec<u32> = indexed.iter().map(|&(_, pos)| pos).collect();
     for (rank, &(orig_idx, pos)) in indexed.iter().enumerate() {
-        let next_pos = sorted_positions.get(rank + 1).copied().unwrap_or(text_length);
+        let next_pos = sorted_positions
+            .get(rank + 1)
+            .copied()
+            .unwrap_or(text_length);
         result[orig_idx].length = next_pos.saturating_sub(pos);
     }
 
@@ -258,9 +262,21 @@ fn flatten_toc_for_mobi(
             length: e.length,
             label: e.label,
             depth: e.depth,
-            parent: if e.parent >= 0 { old_to_new.get(e.parent as usize).copied().unwrap_or(-1) } else { -1 },
-            first_child: e.children.first().and_then(|&c| old_to_new.get(c).copied()).unwrap_or(-1),
-            last_child: e.children.last().and_then(|&c| old_to_new.get(c).copied()).unwrap_or(-1),
+            parent: if e.parent >= 0 {
+                old_to_new.get(e.parent as usize).copied().unwrap_or(-1)
+            } else {
+                -1
+            },
+            first_child: e
+                .children
+                .first()
+                .and_then(|&c| old_to_new.get(c).copied())
+                .unwrap_or(-1),
+            last_child: e
+                .children
+                .last()
+                .and_then(|&c| old_to_new.get(c).copied())
+                .unwrap_or(-1),
         })
         .collect()
 }
@@ -494,7 +510,11 @@ impl MobiExporter {
     /// - `href="chapter.xhtml#section"` → `filepos="NNNNN"` (anchor links)
     /// - `href="#fileposNNNNN"` → `filepos="NNNNN"` (existing MOBI anchors)
     /// - `href="content.html#fileposNNNNN"` → `filepos="NNNNN"` (MOBI roundtrip)
-    fn resolve_internal_links(&self, html: &str, chapter_positions: &HashMap<String, u32>) -> String {
+    fn resolve_internal_links(
+        &self,
+        html: &str,
+        chapter_positions: &HashMap<String, u32>,
+    ) -> String {
         let mut result = html.to_string();
 
         // Phase 1: Convert chapter hrefs to filepos
@@ -537,7 +557,9 @@ impl MobiExporter {
 
                 if let Some(hash_pos) = href_content.find("#filepos") {
                     let after_filepos = &href_content[hash_pos + 8..];
-                    if after_filepos.chars().all(|c| c.is_ascii_digit()) && !after_filepos.is_empty() {
+                    if after_filepos.chars().all(|c| c.is_ascii_digit())
+                        && !after_filepos.is_empty()
+                    {
                         output.push_str("filepos=\"");
                         output.push_str(after_filepos);
                         output.push('"');
@@ -724,9 +746,11 @@ impl MobiBuilder {
 
                 // Detect cover image by matching against metadata.cover_image
                 if self.cover_record_index.is_none()
-                    && self.metadata.cover_image.as_ref().is_some_and(|c| {
-                        paths_match(&path_str, c)
-                    })
+                    && self
+                        .metadata
+                        .cover_image
+                        .as_ref()
+                        .is_some_and(|c| paths_match(&path_str, c))
                 {
                     self.cover_record_index = Some(record_index);
                 }
@@ -737,7 +761,11 @@ impl MobiBuilder {
                 let relative_path = if let Some(parent) = image_path.parent() {
                     if let Some(dirname) = parent.file_name() {
                         if let Some(filename) = image_path.file_name() {
-                            format!("{}/{}", dirname.to_string_lossy(), filename.to_string_lossy())
+                            format!(
+                                "{}/{}",
+                                dirname.to_string_lossy(),
+                                filename.to_string_lossy()
+                            )
                         } else {
                             path_str.to_string()
                         }
@@ -748,7 +776,8 @@ impl MobiBuilder {
                     path_str.to_string()
                 };
 
-                self.image_path_to_record.insert(relative_path, record_index);
+                self.image_path_to_record
+                    .insert(relative_path, record_index);
             }
         }
 
@@ -955,7 +984,7 @@ impl MobiBuilder {
 
         header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // [0] meta orth
         header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // [1] meta infl
-        header.extend_from_slice(&ncx_index.to_be_bytes());     // [2] orth (NCX)
+        header.extend_from_slice(&ncx_index.to_be_bytes()); // [2] orth (NCX)
         for _ in 0..7 {
             header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // [3-9]
         }
@@ -1021,7 +1050,9 @@ impl MobiBuilder {
         header.extend_from_slice(&(self.text_records.len() as u32).to_be_bytes());
 
         // Offset 200-207: FCIS record index + count
-        let flis_record = (self.text_records.len() as u32) + 1 + index_record_count as u32
+        let flis_record = (self.text_records.len() as u32)
+            + 1
+            + index_record_count as u32
             + self.image_records.len() as u32;
         let fcis_record = flis_record + 1;
         header.extend_from_slice(&fcis_record.to_be_bytes());
@@ -1209,8 +1240,8 @@ impl MobiBuilder {
 
         // Calculate total number of records
         // Record 0 + text records + index records + CNCX + image records + FLIS/FCIS/EOF
-        let num_records = 1 + self.text_records.len() + index_record_count
-            + self.image_records.len() + 3;
+        let num_records =
+            1 + self.text_records.len() + index_record_count + self.image_records.len() + 3;
 
         // Build PalmDB header
         let pdb_header = self.build_palmdb_header(num_records as u16);

@@ -12,7 +12,8 @@ fn main() -> io::Result<()> {
 
     println!("=== PalmDoc Decompression Debug ===\n");
     println!("Text record count: {}", text_count);
-    println!("Text length field: {} bytes\n",
+    println!(
+        "Text length field: {} bytes\n",
         u32::from_be_bytes([
             data[mobi_off + 4],
             data[mobi_off + 5],
@@ -56,7 +57,7 @@ fn main() -> io::Result<()> {
         match palmdoc::decompress(record_data) {
             Ok(decompressed) => {
                 println!("  Decompressed: {} bytes", decompressed.len());
-                total_decompressed += decomcompressed.len();
+                total_decompressed += decompressed.len();
 
                 // Show first 100 chars
                 let preview = String::from_utf8_lossy(&decompressed[..100.min(decompressed.len())]);
@@ -71,7 +72,8 @@ fn main() -> io::Result<()> {
     }
 
     println!("Total decompressed so far: {} bytes", total_decompressed);
-    println!("Expected total: {} bytes",
+    println!(
+        "Expected total: {} bytes",
         u32::from_be_bytes([
             data[mobi_off + 4],
             data[mobi_off + 5],
