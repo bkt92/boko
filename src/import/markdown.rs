@@ -359,7 +359,13 @@ impl MarkdownImporter {
             Tag::BlockQuote(_) => {
                 builder.push_node(Role::BlockQuote);
             }
-            Tag::CodeBlock(..) => {
+            Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(lang)) => {
+                let node_id = builder.push_node(Role::CodeBlock);
+                if !lang.is_empty() {
+                    builder.chapter.semantics.set_language(node_id, lang.as_ref());
+                }
+            }
+            Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Indented) => {
                 builder.push_node(Role::CodeBlock);
             }
             Tag::List(..) => {
@@ -565,7 +571,9 @@ impl Importer for MarkdownImporter {
         let content = &self.content[range.start..range.end];
 
         // Render markdown to HTML so downstream exporters get valid HTML
-        let parser = pulldown_cmark::Parser::new(content);
+        let mut opts = pulldown_cmark::Options::empty();
+        opts.insert(pulldown_cmark::Options::ENABLE_MATH);
+        let parser = pulldown_cmark::Parser::new_ext(content, opts);
         let mut html_output = String::new();
         pulldown_cmark::html::push_html(&mut html_output, parser);
 
@@ -658,7 +666,9 @@ impl Importer for MarkdownImporter {
         })?;
 
         let content = &self.content[range.start..range.end];
-        let parser = pulldown_cmark::Parser::new(content);
+        let mut opts = pulldown_cmark::Options::empty();
+        opts.insert(pulldown_cmark::Options::ENABLE_MATH);
+        let parser = pulldown_cmark::Parser::new_ext(content, opts);
 
         let mut builder = IrBuilder::new();
 
@@ -744,6 +754,14 @@ impl Importer for MarkdownImporter {
                         .semantics
                         .set_href(node_id, &format!("#fn-{}", name));
                     builder.text_buffer.push_str(&format!("[^{}]", name));
+                    builder.flush_text();
+                    builder.pop_node();
+                }
+                Event::InlineMath(math) | Event::DisplayMath(math) => {
+                    // Math equations: preserve as code block with language "math"
+                    let node_id = builder.push_node(Role::CodeBlock);
+                    builder.chapter.semantics.set_language(node_id, "math");
+                    builder.text_buffer.push_str(&math);
                     builder.flush_text();
                     builder.pop_node();
                 }
