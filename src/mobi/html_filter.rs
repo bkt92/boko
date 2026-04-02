@@ -48,39 +48,37 @@ pub fn filter_html_for_mobi6(
     (filtered, warnings)
 }
 
-/// Strip MOBI-specific artifacts from HTML before exporting to other formats.
+/// Strip MOBI/Kindle-specific artifacts from HTML before exporting to other formats.
 ///
-/// Removes tags and attributes that are MOBI-internal and have no meaning
+/// Removes tags and attributes that are MOBI/Kindle-internal and have no meaning
 /// in EPUB or other formats:
 /// - `<mbp:pagebreak/>` — MOBI page break markers
 /// - `<a id="fileposNNNNN" />` — MOBI byte-position anchors
-/// - `<a filepos="NNNNN">` — MOBI navigation links (converted to fragments or removed)
+/// - `aid="..."` attributes — Amazon anchor IDs
+/// - `data-Amzn*` / `data-amzn*` attributes — Amazon tracking attributes
 /// - `recindex="NNNNN"` attributes on img tags (should already be converted to src)
 pub fn strip_mobi_artifacts(html: &str) -> String {
-    let mut result = html.to_string();
+    // Phase 1: Strip Kindle/Amazon-specific attributes (aid, data-Amzn*)
+    // Uses the existing high-performance byte-level stripper from transform.rs
+    let cleaned_bytes = super::transform::strip_kindle_attributes_fast(html.as_bytes());
+    let mut result = String::from_utf8_lossy(&cleaned_bytes).to_string();
 
-    // Remove <mbp:pagebreak/> (self-closing)
+    // Phase 2: Remove <mbp:pagebreak/> tags
     result = result.replace("<mbp:pagebreak/>", "");
     result = result.replace("<mbp:pagebreak>", "");
 
-    // Remove <a id="fileposNNNNN" /> anchors (MOBI byte-position markers)
-    // Pattern: <a id="filepos" followed by digits, optional whitespace, then "/>" or "></a>"
+    // Phase 3: Remove <a id="fileposNNNNN" /> anchors (MOBI byte-position markers)
     let mut cleaned = String::with_capacity(result.len());
     let mut search_from = 0;
     while let Some(pos) = result[search_from..].find("<a id=\"filepos") {
         let abs_pos = search_from + pos;
         cleaned.push_str(&result[search_from..abs_pos]);
 
-        // Find end of this tag
         let remaining = &result[abs_pos..];
         if let Some(end) = remaining.find('>') {
             let tag_content = &remaining[..=end];
-            // Check if this is a self-closing anchor with only a filepos id
-            // Pattern: <a id="fileposNNNNN" /> or <a id="fileposNNNNN"></a>
             if tag_content.contains("filepos") && tag_content.starts_with("<a ") {
-                // Skip this tag entirely
                 search_from = abs_pos + end + 1;
-                // Also skip closing </a> if this is <a id="fileposNNNNN"></a> (not self-closing)
                 if !tag_content.contains("/>")
                     && let Some(close) = result[search_from..].find("</a>")
                 {
@@ -89,7 +87,6 @@ pub fn strip_mobi_artifacts(html: &str) -> String {
                 continue;
             }
         }
-        // Not a filepos anchor - keep it
         cleaned.push_str(&result[abs_pos..abs_pos + 3]);
         search_from = abs_pos + 3;
     }
@@ -159,5 +156,36 @@ mod tests {
         let html = r#"<a id="filepos0" /><mbp:pagebreak/><p>Hello</p><mbp:pagebreak/><a id="filepos500" /><p>World</p>"#;
         let result = strip_mobi_artifacts(html);
         assert_eq!(result, "<p>Hello</p><p>World</p>");
+    }
+
+    #[test]
+    fn test_strip_aid_attribute() {
+        let html = r#"<p aid="0001">Hello</p><div aid="00AB">World</div>"#;
+        let result = strip_mobi_artifacts(html);
+        assert!(!result.contains("aid="), "aid should be removed: {}", result);
+        assert!(result.contains("Hello</p>"), "content preserved: {}", result);
+        assert!(result.contains("World</div>"), "content preserved: {}", result);
+    }
+
+    #[test]
+    fn test_strip_amzn_data_attributes() {
+        let html = r#"<p data-AmznRemoved="true">Text</p><span data-amzn-track="1">More</span>"#;
+        let result = strip_mobi_artifacts(html);
+        assert!(!result.contains("data-Amzn"), "data-Amzn should be removed: {}", result);
+        assert!(!result.contains("data-amzn"), "data-amzn should be removed: {}", result);
+        assert!(result.contains("Text</p>"));
+        assert!(result.contains("More</span>"));
+    }
+
+    #[test]
+    fn test_combined_mobi_artifacts() {
+        let html = r#"<a id="filepos100" /><mbp:pagebreak/><p aid="0050">Chapter</p><img src="cover.jpg" data-AmznPageBreak="true"/>"#;
+        let result = strip_mobi_artifacts(html);
+        assert!(!result.contains("filepos"), "filepos anchors removed");
+        assert!(!result.contains("mbp:"), "mbp tags removed");
+        assert!(!result.contains("aid="), "aid attributes removed");
+        assert!(!result.contains("data-Amzn"), "data-Amzn removed");
+        assert!(result.contains("Chapter</p>"), "content preserved");
+        assert!(result.contains(r#"src="cover.jpg""#), "img src preserved without amzn attr");
     }
 }
