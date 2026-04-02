@@ -384,6 +384,51 @@ impl MobiExporter {
         result
     }
 
+    /// Remove cover image from body HTML to prevent dual cover display.
+    ///
+    /// MOBI stores the cover as a dedicated image record (EXTH record 201/202),
+    /// which Kindles display as the book cover. If the cover image also appears
+    /// inline in the HTML body (e.g., from a cover page), the reader sees it twice.
+    /// This strips the `<img recindex="NNNNN">` tag for the cover image record.
+    fn strip_cover_from_body(&self, html: &str, builder: &MobiBuilder) -> String {
+        let Some(cover_idx) = builder.cover_record_index else {
+            return html.to_string();
+        };
+
+        let recindex = format!("recindex=\"{:05}\"", cover_idx);
+
+        // Find all <img> tags containing the cover recindex and collect their ranges
+        let mut removals: Vec<(usize, usize)> = Vec::new();
+        let mut search_from = 0;
+        while let Some(rel_pos) = html[search_from..].find("<img") {
+            let img_start = search_from + rel_pos;
+            if let Some(tag_rel_end) = html[img_start..].find('>') {
+                let tag_end = img_start + tag_rel_end + 1;
+                let tag = &html[img_start..tag_end];
+                if tag.contains(&recindex) {
+                    removals.push((img_start, tag_end));
+                }
+                search_from = tag_end;
+            } else {
+                break;
+            }
+        }
+
+        if removals.is_empty() {
+            return html.to_string();
+        }
+
+        // Build result without the removed tags
+        let mut result = String::with_capacity(html.len());
+        let mut last_end = 0;
+        for (start, end) in &removals {
+            result.push_str(&html[last_end..*start]);
+            last_end = *end;
+        }
+        result.push_str(&html[last_end..]);
+        result
+    }
+
     fn collect_html_content(&self, book: &mut Book) -> io::Result<(String, HashMap<String, u32>)> {
         let mut html = String::new();
         let mut chapter_positions = HashMap::new();
@@ -1289,6 +1334,10 @@ impl Exporter for MobiExporter {
 
         // Update image references in HTML to use MOBI record indices
         let html_content = self.update_image_references(&html_content, &builder);
+
+        // Remove cover image from body HTML to avoid dual cover
+        // (MOBI stores the cover as a dedicated image record via EXTH header)
+        let html_content = self.strip_cover_from_body(&html_content, &builder);
 
         // Resolve internal links to MOBI filepos references
         let html_content = self.resolve_internal_links(&html_content, &chapter_positions);

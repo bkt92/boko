@@ -11,6 +11,7 @@ use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use crate::model::{Book, TocEntry};
+use crate::mobi::html_filter::strip_mobi_artifacts;
 
 use super::Exporter;
 
@@ -112,6 +113,7 @@ impl EpubExporter {
                 id: id.clone(),
                 href: filename,
                 media_type: "application/xhtml+xml".to_string(),
+                properties: None,
             });
             spine_refs.push(id);
 
@@ -124,16 +126,29 @@ impl EpubExporter {
         let assets: Vec<_> = book.list_assets().to_vec();
         let mut asset_map: HashMap<String, String> = HashMap::new();
 
+        // Resolve cover image manifest ID (for EPUB2 meta + EPUB3 properties)
+        let cover_image_path = book.metadata().cover_image.as_deref();
+
         for (i, asset_path) in assets.iter().enumerate() {
             let path_str = asset_path.to_string_lossy();
             let media_type = guess_media_type(&path_str);
             let id = format!("asset_{}", i);
             let href = format!("OEBPS/{}", sanitize_path(&path_str));
 
+            let is_cover = cover_image_path.is_some_and(|cip| {
+                sanitize_path(cip) == sanitize_path(&path_str)
+            });
+            let properties = if is_cover {
+                Some("cover-image".to_string())
+            } else {
+                None
+            };
+
             manifest_items.push(ManifestItem {
                 id: id.clone(),
                 href: href.clone(),
                 media_type,
+                properties,
             });
             asset_map.insert(path_str.to_string(), href);
         }
@@ -156,8 +171,16 @@ impl EpubExporter {
                 .source_id(entry.id)
                 .unwrap_or("unknown.xhtml")
                 .to_string();
-            let content = book.load_raw(entry.id)?;
+            let mut content = book.load_raw(entry.id)?;
             let zip_path = format!("OEBPS/{}", sanitize_path(&source_path));
+
+            // Strip MOBI-specific artifacts (filepos anchors, mbp:pagebreak)
+            // so they don't pollute EPUB output
+            let content_str = String::from_utf8_lossy(&content);
+            let cleaned = strip_mobi_artifacts(&content_str);
+            if cleaned.len() != content_str.len() {
+                content = cleaned.into_bytes();
+            }
 
             zip.start_file(&zip_path, deflated).map_err(io_error)?;
             zip.write_all(&content)?;
@@ -214,6 +237,7 @@ impl EpubExporter {
                 id: "stylesheet".to_string(),
                 href: "OEBPS/style.css".to_string(),
                 media_type: "text/css".to_string(),
+                properties: None,
             });
         }
 
@@ -226,20 +250,32 @@ impl EpubExporter {
                 id: id.clone(),
                 href,
                 media_type: "application/xhtml+xml".to_string(),
+                properties: None,
             });
             spine_refs.push(id);
         }
 
         // Add assets to manifest (from normalized content)
+        let cover_image_path = book.metadata().cover_image.as_deref();
         for (asset_idx, asset_path) in content.assets.iter().enumerate() {
             let media_type = guess_media_type(asset_path);
             let id = format!("asset_{}", asset_idx);
             let href = format!("OEBPS/{}", sanitize_path(asset_path));
 
+            let is_cover = cover_image_path.is_some_and(|cip| {
+                sanitize_path(cip) == sanitize_path(asset_path)
+            });
+            let properties = if is_cover {
+                Some("cover-image".to_string())
+            } else {
+                None
+            };
+
             manifest_items.push(ManifestItem {
                 id,
                 href,
                 media_type,
+                properties,
             });
         }
 
@@ -303,6 +339,8 @@ struct ManifestItem {
     id: String,
     href: String,
     media_type: String,
+    /// Optional EPUB3 properties (e.g. "cover-image", "nav").
+    properties: Option<String>,
 }
 
 /// Generate content.opf from metadata and manifest.
@@ -478,6 +516,21 @@ fn generate_opf(
         ));
     }
 
+    // Cover image reference (EPUB2-style <meta name="cover"> for broad compatibility)
+    // Find the manifest item marked as cover-image
+    let cover_manifest_id = manifest.iter().find(|item| {
+        item.properties
+            .as_deref()
+            .is_some_and(|p| p.split_ascii_whitespace().any(|prop| prop == "cover-image"))
+    }).map(|item| item.id.clone());
+
+    if let Some(ref cover_id) = cover_manifest_id {
+        opf.push_str(&format!(
+            "    <meta name=\"cover\" content=\"{}\"/>\n",
+            escape_xml(cover_id)
+        ));
+    }
+
     opf.push_str("  </metadata>\n");
 
     // Manifest
@@ -489,11 +542,16 @@ fn generate_opf(
     for item in manifest {
         // Get relative path from OEBPS/
         let href = item.href.strip_prefix("OEBPS/").unwrap_or(&item.href);
+        let props_attr = match &item.properties {
+            Some(p) => format!(" properties=\"{}\"", escape_xml(p)),
+            None => String::new(),
+        };
         opf.push_str(&format!(
-            "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"/>\n",
+            "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"{}/>\n",
             escape_xml(&item.id),
             escape_xml(href),
-            escape_xml(&item.media_type)
+            escape_xml(&item.media_type),
+            props_attr,
         ));
     }
     opf.push_str("  </manifest>\n");
