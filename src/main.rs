@@ -558,8 +558,8 @@ fn convert(
         let output_path = output.unwrap();
         if output_format == Format::Markdown {
             // Use path-aware export that extracts images to _img folder
-            use std::path::Path;
             use boko::export::MarkdownExporter;
+            use std::path::Path;
             MarkdownExporter::new()
                 .export_to_path(&mut book, Path::new(output_path))
                 .map_err(|e| format!("Conversion failed: {e}"))?;

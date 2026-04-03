@@ -13,7 +13,7 @@ use zip::write::SimpleFileOptions;
 use crate::mobi::html_filter::strip_mobi_artifacts;
 use crate::model::{Book, TocEntry};
 
-use super::Exporter;
+use super::{Exporter, resolve_cover_asset};
 
 /// Configuration for EPUB export.
 #[derive(Debug, Clone, Default)]
@@ -105,29 +105,37 @@ impl EpubExporter {
 
         // Add chapters to manifest
         for (i, entry) in spine.iter().enumerate() {
-            let source_path = book.source_id(entry.id).unwrap_or("unknown.xhtml");
+            let source_path = book.source_id(entry.id).unwrap_or("unknown.xhtml").to_string();
             let filename = format!("chapter_{}.xhtml", i);
             let id = format!("chapter_{}", i);
+
+            // Detect scripted/mathml/svg properties from content
+            let properties = if let Ok(data) = book.load_raw(entry.id) {
+                detect_xhtml_properties(&data)
+            } else {
+                None
+            };
 
             manifest_items.push(ManifestItem {
                 id: id.clone(),
                 href: filename,
                 media_type: "application/xhtml+xml".to_string(),
-                properties: None,
+                properties,
             });
             spine_refs.push(id);
 
             // Store original path for content writing
             manifest_items.last_mut().unwrap().href =
-                format!("OEBPS/{}", sanitize_path(source_path));
+                format!("OEBPS/{}", sanitize_path(&source_path));
         }
 
         // Add assets to manifest
         let assets: Vec<_> = book.list_assets().to_vec();
         let mut asset_map: HashMap<String, String> = HashMap::new();
 
-        // Resolve cover image manifest ID (for EPUB2 meta + EPUB3 properties)
+        // Resolve cover image index using shared resolver
         let cover_image_path = book.metadata().cover_image.as_deref();
+        let cover_idx = resolve_cover_asset(cover_image_path, &assets);
 
         for (i, asset_path) in assets.iter().enumerate() {
             let path_str = asset_path.to_string_lossy();
@@ -135,8 +143,7 @@ impl EpubExporter {
             let id = format!("asset_{}", i);
             let href = format!("OEBPS/{}", sanitize_path(&path_str));
 
-            let is_cover =
-                cover_image_path.is_some_and(|cip| sanitize_path(cip) == sanitize_path(&path_str));
+            let is_cover = cover_idx.is_some_and(|ci| ci == i);
             let properties = if is_cover {
                 Some("cover-image".to_string())
             } else {
@@ -152,17 +159,31 @@ impl EpubExporter {
             asset_map.insert(path_str.to_string(), href);
         }
 
-        // 4. Write content.opf
+        // 4. Write content.opf (generate after nav is added to manifest)
+        // Add nav document to manifest first
+        manifest_items.insert(0, ManifestItem {
+            id: "nav".to_string(),
+            href: "OEBPS/toc.xhtml".to_string(),
+            media_type: "application/xhtml+xml".to_string(),
+            properties: Some("nav".to_string()),
+        });
+
         let opf = generate_opf(book.metadata(), &manifest_items, &spine_refs);
         zip.start_file("OEBPS/content.opf", deflated)
             .map_err(io_error)?;
         zip.write_all(opf.as_bytes())?;
 
-        // 5. Write toc.ncx
+        // 5. Write toc.ncx (EPUB2 fallback)
         let ncx = generate_ncx(book.metadata(), book.toc());
         zip.start_file("OEBPS/toc.ncx", deflated)
             .map_err(io_error)?;
         zip.write_all(ncx.as_bytes())?;
+
+        // 5b. Write toc.xhtml (EPUB3 nav document)
+        let nav_xhtml = generate_nav_xhtml(book.metadata(), book.toc());
+        zip.start_file("OEBPS/toc.xhtml", deflated)
+            .map_err(io_error)?;
+        zip.write_all(nav_xhtml.as_bytes())?;
 
         // 6. Write chapters
         for entry in &spine {
@@ -240,29 +261,32 @@ impl EpubExporter {
             });
         }
 
-        // Add chapters to manifest
-        for (i, _) in content.chapters.iter().enumerate() {
+        // Add chapters to manifest with property detection
+        for (i, chapter) in content.chapters.iter().enumerate() {
             let id = format!("chapter_{}", i);
             let href = format!("OEBPS/chapter_{}.xhtml", i);
+
+            let properties = detect_xhtml_properties(chapter.document.as_bytes());
 
             manifest_items.push(ManifestItem {
                 id: id.clone(),
                 href,
                 media_type: "application/xhtml+xml".to_string(),
-                properties: None,
+                properties,
             });
             spine_refs.push(id);
         }
 
         // Add assets to manifest (from normalized content)
         let cover_image_path = book.metadata().cover_image.as_deref();
+        let assets_vec: Vec<_> = content.assets.iter().collect();
+        let cover_idx = resolve_cover_asset(cover_image_path, &assets_vec);
         for (asset_idx, asset_path) in content.assets.iter().enumerate() {
             let media_type = guess_media_type(asset_path);
             let id = format!("asset_{}", asset_idx);
             let href = format!("OEBPS/{}", sanitize_path(asset_path));
 
-            let is_cover =
-                cover_image_path.is_some_and(|cip| sanitize_path(cip) == sanitize_path(asset_path));
+            let is_cover = cover_idx.is_some_and(|ci| ci == asset_idx);
             let properties = if is_cover {
                 Some("cover-image".to_string())
             } else {
@@ -277,17 +301,30 @@ impl EpubExporter {
             });
         }
 
-        // 4. Write content.opf
+        // 4. Write content.opf (generate after nav is added to manifest)
+        manifest_items.insert(0, ManifestItem {
+            id: "nav".to_string(),
+            href: "OEBPS/toc.xhtml".to_string(),
+            media_type: "application/xhtml+xml".to_string(),
+            properties: Some("nav".to_string()),
+        });
+
         let opf = generate_opf(book.metadata(), &manifest_items, &spine_refs);
         zip.start_file("OEBPS/content.opf", deflated)
             .map_err(io_error)?;
         zip.write_all(opf.as_bytes())?;
 
-        // 5. Write toc.ncx
+        // 5. Write toc.ncx (EPUB2 fallback)
         let ncx = generate_ncx(book.metadata(), book.toc());
         zip.start_file("OEBPS/toc.ncx", deflated)
             .map_err(io_error)?;
         zip.write_all(ncx.as_bytes())?;
+
+        // 5b. Write toc.xhtml (EPUB3 nav document)
+        let nav_xhtml = generate_nav_xhtml(book.metadata(), book.toc());
+        zip.start_file("OEBPS/toc.xhtml", deflated)
+            .map_err(io_error)?;
+        zip.write_all(nav_xhtml.as_bytes())?;
 
         // 6. Write unified stylesheet
         if !content.css.is_empty() {
@@ -424,8 +461,14 @@ fn generate_opf(
             escape_xml(modified)
         ));
     } else {
-        // Generate a timestamp for EPUB3 compliance
-        opf.push_str("    <meta property=\"dcterms:modified\">2024-01-01T00:00:00Z</meta>\n");
+        // Use current UTC timestamp for EPUB3 compliance
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        opf.push_str(&format!(
+            "    <meta property=\"dcterms:modified\">{ts}</meta>\n"
+        ));
     }
 
     // Contributors with role refinements
@@ -634,6 +677,64 @@ fn write_nav_points(ncx: &mut String, entries: &[TocEntry], play_order: &mut usi
     }
 }
 
+/// Generate toc.xhtml (EPUB3 navigation document).
+fn generate_nav_xhtml(metadata: &crate::model::Metadata, toc: &[TocEntry]) -> String {
+    let mut nav = String::new();
+
+    nav.push_str(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+  <title>"#,
+    );
+    nav.push_str(&escape_xml(&metadata.title));
+    nav.push_str(
+        r#"</title>
+</head>
+<body>
+  <nav epub:type="toc" id="toc">
+    <h1>Table of Contents</h1>
+    <ol>
+"#,
+    );
+
+    write_nav_items(&mut nav, toc, 3);
+
+    nav.push_str(
+        r#"    </ol>
+  </nav>
+</body>
+</html>
+"#,
+    );
+    nav
+}
+
+/// Recursively write nav <li> items for EPUB3 nav document.
+fn write_nav_items(nav: &mut String, entries: &[TocEntry], indent: usize) {
+    let indent_str = "  ".repeat(indent);
+
+    for entry in entries {
+        nav.push_str(&format!(
+            "{}<li><a href=\"{}\">{}</a>",
+            indent_str,
+            escape_xml(&entry.href),
+            escape_xml(&entry.title)
+        ));
+
+        if entry.children.is_empty() {
+            nav.push_str("</li>\n");
+        } else {
+            nav.push('\n');
+            nav.push_str(&format!("{}  <ol>\n", indent_str));
+            write_nav_items(nav, &entry.children, indent + 2);
+            nav.push_str(&format!("{}  </ol>\n", indent_str));
+            nav.push_str(&format!("{}</li>\n", indent_str));
+        }
+    }
+}
+
 /// Escape XML special characters.
 fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -648,6 +749,28 @@ fn sanitize_path(path: &str) -> String {
     path.trim_start_matches('/')
         .replace('\\', "/")
         .replace("//", "/")
+}
+
+/// Check if HTML content contains elements requiring EPUB3 manifest properties.
+fn detect_xhtml_properties(content: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(content);
+    let mut props = Vec::new();
+
+    if text.contains("<script") {
+        props.push("scripted");
+    }
+    if text.contains("<math") {
+        props.push("mathml");
+    }
+    if text.contains("<svg") {
+        props.push("svg");
+    }
+
+    if props.is_empty() {
+        None
+    } else {
+        Some(props.join(" "))
+    }
 }
 
 /// Guess media type from file extension.
@@ -670,6 +793,12 @@ fn guess_media_type(path: &str) -> String {
         "otf" => "font/otf".to_string(),
         "woff" => "font/woff".to_string(),
         "woff2" => "font/woff2".to_string(),
+        "mp4" | "m4v" => "video/mp4".to_string(),
+        "webm" => "video/webm".to_string(),
+        "ogv" => "video/ogg".to_string(),
+        "mp3" | "mpeg" => "audio/mpeg".to_string(),
+        "ogg" | "oga" => "audio/ogg".to_string(),
+        "m4a" | "aac" => "audio/mp4".to_string(),
         "ncx" => "application/x-dtbncx+xml".to_string(),
         "opf" => "application/oebps-package+xml".to_string(),
         _ => "application/octet-stream".to_string(),

@@ -10,8 +10,10 @@ fn main() -> io::Result<()> {
     File::open("tests/fixtures/test_book.mobi")?.read_to_end(&mut ref_data)?;
     File::open("tests/fixtures/test_final.mobi")?.read_to_end(&mut gen_data)?;
 
-    let ref_mobi_off = u32::from_be_bytes([ref_data[78], ref_data[79], ref_data[80], ref_data[81]]) as usize;
-    let gen_mobi_off = u32::from_be_bytes([gen_data[78], gen_data[79], gen_data[80], gen_data[81]]) as usize;
+    let ref_mobi_off =
+        u32::from_be_bytes([ref_data[78], ref_data[79], ref_data[80], ref_data[81]]) as usize;
+    let gen_mobi_off =
+        u32::from_be_bytes([gen_data[78], gen_data[79], gen_data[80], gen_data[81]]) as usize;
 
     let ref_text_len = u32::from_be_bytes([
         ref_data[ref_mobi_off + 4],
@@ -100,7 +102,10 @@ fn main() -> io::Result<()> {
 
     println!("\nReference compressed size: {} bytes", ref_compressed);
     println!("Generated compressed size: {} bytes", gen_compressed);
-    println!("Compression ratio: {:.2}%", (ref_compressed as f64 / ref_text_len as f64) * 100.0);
+    println!(
+        "Compression ratio: {:.2}%",
+        (ref_compressed as f64 / ref_text_len as f64) * 100.0
+    );
 
     // Check if there are extra records after text records
     println!("\nRecord 117 (first INDX):");

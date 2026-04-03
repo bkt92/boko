@@ -44,8 +44,11 @@ fn main() -> std::io::Result<()> {
 
     println!("=== EXTH Header Analysis: {} ===\n", path);
     println!("MOBI header offset: 0x{:04X}", mobi_offset);
-    println!("EXTH signature offset: 0x{:04X} ({} bytes from MOBI header)",
-        exth_offset, exth_offset - mobi_offset);
+    println!(
+        "EXTH signature offset: 0x{:04X} ({} bytes from MOBI header)",
+        exth_offset,
+        exth_offset - mobi_offset
+    );
 
     // Parse EXTH header
     if exth_offset + 12 > data.len() {
@@ -67,33 +70,34 @@ fn main() -> std::io::Result<()> {
         data[exth_offset + 11],
     ]);
 
-    println!("EXTH header length: {} bytes (0x{:04X})", exth_len, exth_len);
+    println!(
+        "EXTH header length: {} bytes (0x{:04X})",
+        exth_len, exth_len
+    );
     println!("EXTH record count: {} records\n", exth_count);
 
     // Parse records
     let mut pos = exth_offset + 12;
     for i in 0..exth_count {
         if pos + 8 > data.len() {
-            println!("ERROR: Not enough data for record header at offset 0x{:04X}", pos);
+            println!(
+                "ERROR: Not enough data for record header at offset 0x{:04X}",
+                pos
+            );
             break;
         }
 
-        let rec_type = u32::from_be_bytes([
-            data[pos],
-            data[pos + 1],
-            data[pos + 2],
-            data[pos + 3],
-        ]);
+        let rec_type = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
 
-        let rec_len = u32::from_be_bytes([
-            data[pos + 4],
-            data[pos + 5],
-            data[pos + 6],
-            data[pos + 7],
-        ]) as usize;
+        let rec_len =
+            u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]])
+                as usize;
 
         if rec_len < 8 || pos + rec_len > data.len() {
-            println!("ERROR: Invalid record length {} at offset 0x{:04X}", rec_len, pos);
+            println!(
+                "ERROR: Invalid record length {} at offset 0x{:04X}",
+                rec_len, pos
+            );
             break;
         }
 
@@ -208,8 +212,10 @@ fn main() -> std::io::Result<()> {
             data_str.to_string()
         };
 
-        println!("Record {}: type={} ({}), len={}, data={:?}",
-            i, rec_type, rec_name, rec_len, preview);
+        println!(
+            "Record {}: type={} ({}), len={}, data={:?}",
+            i, rec_type, rec_name, rec_len, preview
+        );
 
         pos += rec_len;
     }
@@ -217,7 +223,11 @@ fn main() -> std::io::Result<()> {
     // Show what's after EXTH
     if pos < data.len() && pos < mobi_offset + 12000 {
         println!("\n=== Data after EXTH ===");
-        println!("Offset 0x{:04X} (0x{:04X} from MOBI header):", pos, pos - mobi_offset);
+        println!(
+            "Offset 0x{:04X} (0x{:04X} from MOBI header):",
+            pos,
+            pos - mobi_offset
+        );
 
         // Look for title (null-terminated string)
         let mut title_end = pos;

@@ -351,7 +351,7 @@ impl Azw3Importer {
         }
 
         // Build metadata
-        let mut metadata = build_metadata(&pdb, &mobi, &exth);
+        let metadata = build_metadata(&pdb, &mobi, &exth);
 
         // Parse KF8 indices (without reading text content)
         let codec = match mobi.encoding {
@@ -452,12 +452,8 @@ impl Azw3Importer {
             nodes.into_iter().map(toc_node_to_entry).collect()
         };
 
-        // Find cover image
-        if let Some(exth) = exth
-            && let Some(cover_idx) = exth.cover_offset
-        {
-            metadata.cover_image = Some(format!("images/image_{:04}.jpg", cover_idx));
-        }
+        // Extract cover offset before building importer (exth is borrowed)
+        let cover_offset = exth.as_ref().and_then(|e| e.cover_offset);
 
         let mut importer = Self {
             source,
@@ -484,6 +480,13 @@ impl Azw3Importer {
         };
 
         importer.assets = importer.discover_assets();
+
+        // Find cover image using discovered asset path with correct extension
+        if let Some(cover_idx) = cover_offset
+            && let Some(cover_path) = importer.assets.get(cover_idx as usize)
+        {
+            importer.metadata.cover_image = Some(cover_path.to_string_lossy().to_string());
+        }
 
         Ok(importer)
     }

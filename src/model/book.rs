@@ -75,6 +75,12 @@ pub struct Metadata {
     pub subjects: Vec<String>,
     pub date: Option<String>,
     pub rights: Option<String>,
+    /// Path to the cover image asset.
+    ///
+    /// **Contract**: If set, this MUST match an entry in `Importer::list_assets()`
+    /// so that `Book::load_asset(Path::new(&cover_image))` succeeds.
+    /// Importers must ensure this path matches one of their reported asset paths.
+    /// Exporters should use `resolve_cover_asset()` for robust matching.
     pub cover_image: Option<String>,
     /// dcterms:modified timestamp
     pub modified_date: Option<String>,

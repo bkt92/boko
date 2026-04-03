@@ -26,10 +26,24 @@ fn main() -> std::io::Result<()> {
 
     // Extract record offsets
     let cal_offsets: Vec<u32> = (0..cal_nrec)
-        .map(|i| u32::from_be_bytes([cal[78 + i * 8], cal[78 + i * 8 + 1], cal[78 + i * 8 + 2], cal[78 + i * 8 + 3]]))
+        .map(|i| {
+            u32::from_be_bytes([
+                cal[78 + i * 8],
+                cal[78 + i * 8 + 1],
+                cal[78 + i * 8 + 2],
+                cal[78 + i * 8 + 3],
+            ])
+        })
         .collect();
     let boko_offsets: Vec<u32> = (0..boko_nrec)
-        .map(|i| u32::from_be_bytes([boko[78 + i * 8], boko[78 + i * 8 + 1], boko[78 + i * 8 + 2], boko[78 + i * 8 + 3]]))
+        .map(|i| {
+            u32::from_be_bytes([
+                boko[78 + i * 8],
+                boko[78 + i * 8 + 1],
+                boko[78 + i * 8 + 2],
+                boko[78 + i * 8 + 3],
+            ])
+        })
         .collect();
 
     // Get record data helper
@@ -65,8 +79,14 @@ fn main() -> std::io::Result<()> {
     // MOBI header starts at offset 16
     let cal_hdr_len = u32::from_be_bytes([cal_r0[20], cal_r0[21], cal_r0[22], cal_r0[23]]);
     let boko_hdr_len = u32::from_be_bytes([boko_r0[20], boko_r0[21], boko_r0[22], boko_r0[23]]);
-    println!("\nMOBI header length cal:  {} (0x{:X})", cal_hdr_len, cal_hdr_len);
-    println!("MOBI header length boko: {} (0x{:X})", boko_hdr_len, boko_hdr_len);
+    println!(
+        "\nMOBI header length cal:  {} (0x{:X})",
+        cal_hdr_len, cal_hdr_len
+    );
+    println!(
+        "MOBI header length boko: {} (0x{:X})",
+        boko_hdr_len, boko_hdr_len
+    );
 
     let cal_codepage = u32::from_be_bytes([cal_r0[28], cal_r0[29], cal_r0[30], cal_r0[31]]);
     let boko_codepage = u32::from_be_bytes([boko_r0[28], boko_r0[29], boko_r0[30], boko_r0[31]]);
@@ -124,37 +144,63 @@ fn main() -> std::io::Result<()> {
 
     // Record layout
     println!("\n=== Record Layout ===");
-    for (label, data, offsets, nrec) in
-        [("Cal", &cal, &cal_offsets, cal_nrec), ("Boko", &boko, &boko_offsets, boko_nrec)]
-    {
+    for (label, data, offsets, nrec) in [
+        ("Cal", &cal, &cal_offsets, cal_nrec),
+        ("Boko", &boko, &boko_offsets, boko_nrec),
+    ] {
         println!("\n{} ({} records):", label, nrec);
         for i in 0..nrec {
             let start = offsets[i] as usize;
-            let end = if i + 1 < offsets.len() { offsets[i + 1] as usize } else { data.len() };
+            let end = if i + 1 < offsets.len() {
+                offsets[i + 1] as usize
+            } else {
+                data.len()
+            };
             let size = end - start;
             let magic = if size >= 4 {
                 String::from_utf8_lossy(&data[start..start + 4.min(size)])
             } else {
                 std::borrow::Cow::Borrowed("")
             };
-            println!("  Rec {:3}: offset={:8} size={:6} magic={:?}", i, start, size, magic);
+            println!(
+                "  Rec {:3}: offset={:8} size={:6} magic={:?}",
+                i, start, size, magic
+            );
         }
     }
 
     // EXTH header comparison
     println!("\n=== EXTH Header ===");
-    for (label, r0, hdr_len) in [("Cal", &cal_r0, cal_hdr_len), ("Boko", &boko_r0, boko_hdr_len)] {
+    for (label, r0, hdr_len) in [
+        ("Cal", &cal_r0, cal_hdr_len),
+        ("Boko", &boko_r0, boko_hdr_len),
+    ] {
         let exth_start = 16 + hdr_len as usize;
         if exth_start + 12 <= r0.len() && &r0[exth_start..exth_start + 4] == b"EXTH" {
-            let exth_len = u32::from_be_bytes([r0[exth_start + 4], r0[exth_start + 5], r0[exth_start + 6], r0[exth_start + 7]]);
-            let exth_count = u32::from_be_bytes([r0[exth_start + 8], r0[exth_start + 9], r0[exth_start + 10], r0[exth_start + 11]]);
+            let exth_len = u32::from_be_bytes([
+                r0[exth_start + 4],
+                r0[exth_start + 5],
+                r0[exth_start + 6],
+                r0[exth_start + 7],
+            ]);
+            let exth_count = u32::from_be_bytes([
+                r0[exth_start + 8],
+                r0[exth_start + 9],
+                r0[exth_start + 10],
+                r0[exth_start + 11],
+            ]);
             println!("\n{} EXTH: len={}, count={}", label, exth_len, exth_count);
             let mut pos = exth_start + 12;
             for _ in 0..exth_count {
-                if pos + 8 > r0.len() { break; }
+                if pos + 8 > r0.len() {
+                    break;
+                }
                 let rtype = u32::from_be_bytes([r0[pos], r0[pos + 1], r0[pos + 2], r0[pos + 3]]);
-                let rlen = u32::from_be_bytes([r0[pos + 4], r0[pos + 5], r0[pos + 6], r0[pos + 7]]) as usize;
-                if rlen < 8 || pos + rlen > r0.len() { break; }
+                let rlen = u32::from_be_bytes([r0[pos + 4], r0[pos + 5], r0[pos + 6], r0[pos + 7]])
+                    as usize;
+                if rlen < 8 || pos + rlen > r0.len() {
+                    break;
+                }
                 let data = &r0[pos + 8..pos + rlen];
                 let data_str = String::from_utf8_lossy(data);
                 let display = if data_str.len() > 80 {
@@ -170,13 +216,18 @@ fn main() -> std::io::Result<()> {
 
     // INDX record details (for NCX/TOC)
     println!("\n=== INDX Records (TOC/NCX) ===");
-    for (label, data, offsets, nrec) in
-        [("Cal", &cal, &cal_offsets, cal_nrec), ("Boko", &boko, &boko_offsets, boko_nrec)]
-    {
+    for (label, data, offsets, nrec) in [
+        ("Cal", &cal, &cal_offsets, cal_nrec),
+        ("Boko", &boko, &boko_offsets, boko_nrec),
+    ] {
         println!("\n{}:", label);
         for i in 0..nrec {
             let start = offsets[i] as usize;
-            let end = if i + 1 < offsets.len() { offsets[i + 1] as usize } else { data.len() };
+            let end = if i + 1 < offsets.len() {
+                offsets[i + 1] as usize
+            } else {
+                data.len()
+            };
             if end - start >= 4 && &data[start..start + 4] == b"INDX" {
                 let rec = &data[start..end];
                 let indx_type = if rec.len() > 12 {
@@ -184,9 +235,18 @@ fn main() -> std::io::Result<()> {
                 } else {
                     0
                 };
-                println!("  Rec {} at offset {}: INDX record, {} bytes, type={}", i, start, end - start, indx_type);
+                println!(
+                    "  Rec {} at offset {}: INDX record, {} bytes, type={}",
+                    i,
+                    start,
+                    end - start,
+                    indx_type
+                );
                 // Print first 32 bytes hex
-                let hex_bytes: Vec<String> = rec[..32.min(rec.len())].iter().map(|b| format!("{:02X}", b)).collect();
+                let hex_bytes: Vec<String> = rec[..32.min(rec.len())]
+                    .iter()
+                    .map(|b| format!("{:02X}", b))
+                    .collect();
                 println!("    Header: {}", hex_bytes.join(" "));
             }
         }

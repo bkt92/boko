@@ -19,7 +19,7 @@ use crate::mobi::writer_transform::{
 };
 use crate::model::{Book, Resource, TocEntry};
 
-use super::Exporter;
+use super::{Exporter, resolve_cover_asset};
 
 // Constants
 const RECORD_SIZE: usize = 4096;
@@ -692,8 +692,9 @@ impl Kf8Builder {
         record0.extend_from_slice(&title_offset.to_be_bytes());
         record0.extend_from_slice(&(title_bytes.len() as u32).to_be_bytes());
 
-        // Language
-        record0.extend_from_slice(&0x09u32.to_be_bytes());
+        // Language - map from metadata or default to English
+        let lang = language_code(&self.ctx.metadata.language);
+        record0.extend_from_slice(&lang.to_be_bytes());
 
         // Dictionary in/out
         record0.extend_from_slice(&0u32.to_be_bytes());
@@ -819,10 +820,11 @@ impl Kf8Builder {
             records.push((109, rights.as_bytes().to_vec()));
         }
 
-        // Cover offset - find the index of the cover image in sorted image_hrefs
-        if let Some(ref cover_path) = self.ctx.metadata.cover_image
-            && let Some(cover_idx) = self.image_hrefs.iter().position(|h| h == cover_path)
-        {
+        // Cover offset - resolve cover image index using shared resolver
+        if let Some(cover_idx) = resolve_cover_asset(
+            self.ctx.metadata.cover_image.as_deref(),
+            &self.image_hrefs,
+        ) {
             records.push((201, (cover_idx as u32).to_be_bytes().to_vec()));
         }
 
@@ -985,6 +987,38 @@ fn sanitize_title(title: &str) -> String {
         .replace(' ', "_")
 }
 
+/// Map BCP-47 language tag to MOBI language code.
+fn language_code(lang: &str) -> u32 {
+    let lower = lang.to_lowercase();
+    let primary = lower.split('-').next().unwrap_or("");
+    match primary {
+        "en" => 0x09,
+        "de" => 0x07,
+        "fr" => 0x0C,
+        "es" => 0x0A,
+        "it" => 0x11,
+        "ja" => 0x15,
+        "zh" => 0x19,
+        "ko" => 0x12,
+        "pt" => 0x16,
+        "ru" => 0x17,
+        "nl" => 0x13,
+        "sv" => 0x1A,
+        "da" => 0x06,
+        "fi" => 0x0B,
+        "el" => 0x08,
+        "cs" => 0x05,
+        "pl" => 0x15,
+        "tr" => 0x1F,
+        "ar" => 0x01,
+        "he" => 0x0D,
+        "th" => 0x1D,
+        "hu" => 0x0E,
+        "no" => 0x14,
+        _ => 0x09,
+    }
+}
+
 /// Flatten hierarchical TOC into linear list.
 fn flatten_toc(
     entries: &[TocEntry],
@@ -1077,6 +1111,20 @@ fn flatten_toc(
         filepos_map,
         &mut result,
     );
+
+    // Calculate proper lengths by sorting by position
+    let mut indexed: Vec<(usize, u32)> =
+        result.iter().enumerate().map(|(i, e)| (i, e.pos)).collect();
+    indexed.sort_by_key(|&(_, pos)| pos);
+
+    let sorted_positions: Vec<u32> = indexed.iter().map(|&(_, pos)| pos).collect();
+    for (rank, &(orig_idx, pos)) in indexed.iter().enumerate() {
+        let next_pos = sorted_positions
+            .get(rank + 1)
+            .copied()
+            .unwrap_or(text_length);
+        result[orig_idx].length = next_pos.saturating_sub(pos);
+    }
 
     result
         .into_iter()

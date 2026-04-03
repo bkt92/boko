@@ -21,10 +21,7 @@ fn main() -> io::Result<()> {
     ]);
 
     // Get text record count
-    let text_record_count = u16::from_be_bytes([
-        data[mobi_off + 8],
-        data[mobi_off + 9],
-    ]);
+    let text_record_count = u16::from_be_bytes([data[mobi_off + 8], data[mobi_off + 9]]);
 
     println!("Generated MOBI:");
     println!("  Text length (uncompressed): {}", text_length);

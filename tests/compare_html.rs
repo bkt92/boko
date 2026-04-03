@@ -16,7 +16,10 @@ fn main() -> io::Result<()> {
     // Extract HTML from generated MOBI (via round-trip)
     // This will fail but we can see what HTML we're generating
     println!("Original EPUB HTML length: {} bytes", original_html.len());
-    println!("Original HTML (first 500 chars):\n{}\n", &original_html[..500.min(original_html.len())]);
+    println!(
+        "Original HTML (first 500 chars):\n{}\n",
+        &original_html[..500.min(original_html.len())]
+    );
 
     // Count image tags
     let img_count = original_html.matches("<img").count();
@@ -40,7 +43,7 @@ fn main() -> io::Result<()> {
     // Check first image tag
     if let Some(pos) = original_html.find("<img") {
         let end = original_html[pos..].find('>').unwrap_or(100);
-        println!("\nFirst image tag: {}", &original_html[pos..pos+end]);
+        println!("\nFirst image tag: {}", &original_html[pos..pos + end]);
     }
 
     Ok(())

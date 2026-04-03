@@ -62,13 +62,11 @@ impl MarkdownExporter {
         // 3. Collect image assets and build path mapping
         let img_dir = build_img_dir_path(output_path);
         let assets: Vec<_> = book.list_assets().to_vec();
-        let image_assets: Vec<_> = assets
-            .iter()
-            .filter(|p| is_image_path(p))
-            .collect();
+        let image_assets: Vec<_> = assets.iter().filter(|p| is_image_path(p)).collect();
 
         // Build old_path -> new_filename mapping
-        let mut img_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut img_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for (i, asset_path) in image_assets.iter().enumerate() {
             let path_str = asset_path.to_string_lossy();
             let ext = Path::new(&*path_str)

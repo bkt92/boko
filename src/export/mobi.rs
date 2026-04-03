@@ -9,13 +9,7 @@ use std::path::Path;
 use crate::mobi::index::{NcxBuildEntry, build_ncx_indx};
 use crate::model::{AnchorTarget, Book, Metadata, TocEntry};
 
-use super::Exporter;
-
-/// Find byte position of an element by its id attribute in HTML.
-fn find_element_position(html: &str, element_id: &str) -> Option<u32> {
-    let pattern = format!("id=\"{}\"", element_id);
-    html.find(&pattern).map(|pos| pos as u32)
-}
+use super::{Exporter, resolve_cover_asset};
 
 /// Find a safe UTF-8 boundary near `max_len` bytes from the start.
 ///
@@ -62,55 +56,16 @@ fn language_code(lang: &str) -> u32 {
     }
 }
 
-/// Encode trailing byte sequence (TBS) for a text record.
-///
-/// TBS tells the Kindle reader which TOC entries fall within this record,
-/// enabling accurate navigation. Each entry is encoded as (offset, length)
-/// pairs using variable-width integers. The encoded data is appended to the
-/// compressed record, with a backward-encoded size prefix.
-fn _encode_trailing_data(entries: &[(u32, u32)]) -> Vec<u8> {
-    if entries.is_empty() {
-        return Vec::new();
-    }
-
-    /// Encode a variable-width integer (same format as MOBI encint).
-    fn encode_vwi(mut val: u32) -> Vec<u8> {
-        let mut result = Vec::new();
-        loop {
-            let mut byte = (val & 0x7F) as u8;
-            val >>= 7;
-            if val > 0 {
-                byte |= 0x80;
-            }
-            result.push(byte);
-            if val == 0 {
-                break;
-            }
-        }
-        result
-    }
-
-    // Encode the entry data
-    let mut data = Vec::new();
-    for &(offset, length) in entries {
-        data.extend_from_slice(&encode_vwi(offset));
-        data.extend_from_slice(&encode_vwi(length));
-    }
-
-    // Encode size as backward variable-width integer
-    let size = data.len() as u32;
-    let mut size_bytes = encode_vwi(size);
-    size_bytes.reverse(); // Backward encoding
-
-    let mut result = size_bytes;
-    result.extend_from_slice(&data);
-    result
+/// Find byte position of an element by its id attribute in HTML.
+fn find_element_position(html: &str, element_id: &str) -> Option<u32> {
+    let pattern = format!("id=\"{}\"", element_id);
+    html.find(&pattern).map(|pos| pos as u32)
 }
 
 /// Flatten hierarchical TOC into a linear list of NcxBuildEntry for MOBI 6.
 ///
 /// Walks TocEntry tree recursively, resolves byte positions in the HTML,
-/// calculates section lengths, and sets parent/child indices.
+/// calculates section lengths, and sets parent/child indices for the binary NCX.
 fn flatten_toc_for_mobi(
     entries: &[TocEntry],
     html_content: &str,
@@ -133,7 +88,6 @@ fn flatten_toc_for_mobi(
         html_content: &str,
         chapter_positions: &HashMap<String, u32>,
     ) -> u32 {
-        // 1. Try resolved target
         if let Some(ref target) = entry.target {
             match target {
                 AnchorTarget::Chapter(chapter_id) => {
@@ -145,8 +99,6 @@ fn flatten_toc_for_mobi(
                 AnchorTarget::Internal(node_id) => {
                     let key = format!("ChapterId({})", node_id.chapter.0);
                     if let Some(&pos) = chapter_positions.get(&key) {
-                        // Also try to find the specific element within the chapter
-                        // by looking for its id in the HTML
                         return pos;
                     }
                 }
@@ -154,7 +106,6 @@ fn flatten_toc_for_mobi(
             }
         }
 
-        // 2. Parse href for fragment and search HTML
         let fragment = if let Some(hash_pos) = entry.href.find('#') {
             &entry.href[hash_pos + 1..]
         } else {
@@ -162,18 +113,15 @@ fn flatten_toc_for_mobi(
         };
 
         if let Some(stripped) = fragment.strip_prefix("filepos") {
-            // MOBI filepos anchor: parse byte position directly
             if let Ok(pos) = stripped.parse::<u32>() {
                 return pos;
             }
-        } else if !fragment.is_empty() {
-            // HTML id anchor: search for it in the combined HTML
-            if let Some(pos) = find_element_position(html_content, fragment) {
-                return pos;
-            }
+        } else if !fragment.is_empty()
+            && let Some(pos) = find_element_position(html_content, fragment)
+        {
+            return pos;
         }
 
-        // 3. Try matching href to chapter position
         let key = format!("ChapterId({})", entry.href);
         if let Some(&pos) = chapter_positions.get(&key) {
             return pos;
@@ -196,7 +144,7 @@ fn flatten_toc_for_mobi(
 
             result.push(TempEntry {
                 pos,
-                length: 0, // calculated later
+                length: 0,
                 label: entry.title.clone(),
                 depth,
                 parent: parent_idx,
@@ -221,12 +169,10 @@ fn flatten_toc_for_mobi(
     flatten_recursive(entries, 0, -1, html_content, chapter_positions, &mut result);
 
     // Sort by position, then calculate lengths
-    // First, sort entries by position while maintaining index relationships
     let mut indexed: Vec<(usize, u32)> =
         result.iter().enumerate().map(|(i, e)| (i, e.pos)).collect();
     indexed.sort_by_key(|&(_, pos)| pos);
 
-    // Calculate lengths based on sorted order
     let sorted_positions: Vec<u32> = indexed.iter().map(|&(_, pos)| pos).collect();
     for (rank, &(orig_idx, pos)) in indexed.iter().enumerate() {
         let next_pos = sorted_positions
@@ -244,7 +190,6 @@ fn flatten_toc_for_mobi(
         }
     }
 
-    // Re-index: build mapping from old index to new index
     let mut old_to_new: Vec<i32> = vec![-1; result.len()];
     for (i, should_keep) in keep.iter().enumerate() {
         if *should_keep {
@@ -252,7 +197,6 @@ fn flatten_toc_for_mobi(
         }
     }
 
-    // Convert TempEntry to NcxBuildEntry with re-indexed parent/child
     result
         .into_iter()
         .enumerate()
@@ -279,6 +223,64 @@ fn flatten_toc_for_mobi(
                 .unwrap_or(-1),
         })
         .collect()
+}
+
+/// Encode a backward-encoded variable-width integer (bit 8 set on last byte).
+fn bvwi(mut val: u32) -> Vec<u8> {
+    let mut result = Vec::new();
+    loop {
+        let mut byte = (val & 0x7F) as u8;
+        val >>= 7;
+        if val > 0 {
+            byte |= 0x80; // continuation bit
+        }
+        result.push(byte);
+        if val == 0 {
+            break;
+        }
+    }
+    result
+}
+
+/// Build TBS (Trailing Byte Sequence) for a text record.
+///
+/// TBS tells the Kindle reader which TOC entries span this record,
+/// enabling "current chapter" display. The format is:
+/// - Backward-encoded size prefix
+/// - For each spanning entry: backward-encoded (offset, length) pairs
+fn build_tbs(
+    record_start: u32,
+    record_end: u32,
+    toc_entries: &[NcxBuildEntry],
+) -> Vec<u8> {
+    // Find entries that overlap with this record
+    let spanning: Vec<(u32, u32)> = toc_entries
+        .iter()
+        .filter(|e| e.pos < record_end && (e.pos + e.length) > record_start)
+        .map(|e| {
+            let overlap_start = e.pos.max(record_start) - record_start;
+            let overlap_end = (e.pos + e.length).min(record_end) - record_start;
+            (overlap_start, overlap_end - overlap_start)
+        })
+        .collect();
+
+    if spanning.is_empty() {
+        return Vec::new();
+    }
+
+    let mut data = Vec::new();
+    for (offset, length) in &spanning {
+        data.extend(bvwi(*offset));
+        data.extend(bvwi(*length));
+    }
+
+    // Backward-encoded size prefix
+    let mut size_bytes = bvwi(data.len() as u32);
+    size_bytes.reverse(); // reverse for backward encoding
+
+    let mut result = size_bytes;
+    result.extend_from_slice(&data);
+    result
 }
 
 /// Configuration for MOBI 6 export.
@@ -443,6 +445,64 @@ impl MobiExporter {
         }
         result.push_str(&html[last_end..]);
         result
+    }
+
+    /// Build HTML-based TOC for pure MOBI 6.
+    ///
+    /// MOBI 6 does not use KF8 INDX/CNCX records. Instead, navigation is done
+    /// via an HTML page with `<a filepos="NNNNN">` links embedded in the text.
+    /// The TOC page is placed at the beginning of the book content.
+    fn build_html_toc(
+        &self,
+        toc: &[TocEntry],
+        chapter_positions: &HashMap<String, u32>,
+    ) -> String {
+        if toc.is_empty() {
+            return String::new();
+        }
+
+        fn resolve_toc_position(entry: &TocEntry, chapter_positions: &HashMap<String, u32>) -> Option<u32> {
+            if let Some(ref target) = entry.target {
+                match target {
+                    AnchorTarget::Chapter(chapter_id) => {
+                        let key = format!("ChapterId({})", chapter_id.0);
+                        chapter_positions.get(&key).copied()
+                    }
+                    AnchorTarget::Internal(node_id) => {
+                        let key = format!("ChapterId({})", node_id.chapter.0);
+                        chapter_positions.get(&key).copied()
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+
+        fn build_entries(
+            entries: &[TocEntry],
+            chapter_positions: &HashMap<String, u32>,
+            depth: usize,
+        ) -> String {
+            let mut html = String::new();
+            for entry in entries {
+                let pos = resolve_toc_position(entry, chapter_positions).unwrap_or(0);
+                let indent = "&nbsp;".repeat(depth * 4);
+                html.push_str(&format!(
+                    "{}<a filepos=\"{}\">{}</a><br/>\n",
+                    indent, pos, entry.title
+                ));
+                if !entry.children.is_empty() {
+                    html.push_str(&build_entries(&entry.children, chapter_positions, depth + 1));
+                }
+            }
+            html
+        }
+
+        let mut toc_html = String::from("<html><body>\n");
+        toc_html.push_str(&build_entries(toc, chapter_positions, 0));
+        toc_html.push_str("</body></html>");
+        toc_html
     }
 
     fn collect_html_content(&self, book: &mut Book) -> io::Result<(String, HashMap<String, u32>)> {
@@ -617,6 +677,8 @@ struct MobiBuilder {
     toc: Vec<TocEntry>,
     /// Chapter ID to byte position mapping (for TOC resolution)
     chapter_positions: HashMap<String, u32>,
+    /// Flattened NCX entries for binary TOC index and TBS generation
+    ncx_entries: Vec<NcxBuildEntry>,
     /// Collected warnings
     warnings: Vec<String>,
     /// Configuration
@@ -642,6 +704,7 @@ impl MobiBuilder {
             metadata,
             toc,
             chapter_positions: HashMap::new(),
+            ncx_entries: Vec::new(),
             warnings: Vec::new(),
             config,
         })
@@ -709,6 +772,13 @@ impl MobiBuilder {
         // Collect image paths first to avoid borrow checker issues
         let image_paths: Vec<_> = book.list_assets().to_vec();
 
+        // Resolve cover image index using shared resolver
+        let cover_image_idx = resolve_cover_asset(
+            self.metadata.cover_image.as_deref(),
+            &image_paths,
+        );
+
+        let mut image_iter_idx = 0usize;
         for image_path in image_paths {
             // Filter to only process actual image files
             let path_str = image_path.to_string_lossy();
@@ -732,6 +802,7 @@ impl MobiBuilder {
                 Err(e) => {
                     self.warnings
                         .push(format!("Failed to load image {:?}: {}", image_path, e));
+                    image_iter_idx += 1;
                     continue; // Skip this image
                 }
             };
@@ -744,13 +815,9 @@ impl MobiBuilder {
                 let record_index = self.image_records.len() as u32 + 1;
                 self.image_records.push(image_data);
 
-                // Detect cover image by matching against metadata.cover_image
+                // Detect cover image by index from shared resolver
                 if self.cover_record_index.is_none()
-                    && self
-                        .metadata
-                        .cover_image
-                        .as_ref()
-                        .is_some_and(|c| paths_match(&path_str, c))
+                    && cover_image_idx.is_some_and(|ci| ci == image_iter_idx)
                 {
                     self.cover_record_index = Some(record_index);
                 }
@@ -779,20 +846,19 @@ impl MobiBuilder {
                 self.image_path_to_record
                     .insert(relative_path, record_index);
             }
+
+            image_iter_idx += 1;
         }
 
         Ok(())
     }
 
-    /// Build compressed text records from HTML content
+    /// Build compressed text records from HTML content, with TBS appended.
     fn build_text_records(&mut self, html_content: &str) -> io::Result<()> {
         use crate::mobi::palmdoc;
 
-        // Split HTML into chunks, then compress each chunk independently
-        // This ensures PalmDoc back-references don't span record boundaries
         const RECORD_SIZE: usize = 4096;
 
-        // Split HTML into chunks and compress each one
         let mut offset = 0;
         let html_bytes = html_content.as_bytes();
 
@@ -806,19 +872,26 @@ impl MobiBuilder {
             let chunk = &html_bytes[offset..end];
 
             // Compress this chunk
-            let compressed = palmdoc::compress(chunk);
-            self.text_records.push(compressed);
+            let mut compressed = palmdoc::compress(chunk);
 
+            // Append TBS (Trailing Byte Sequence) for chapter context
+            if !self.ncx_entries.is_empty() {
+                let tbs = build_tbs(
+                    offset as u32,
+                    end as u32,
+                    &self.ncx_entries,
+                );
+                compressed.extend_from_slice(&tbs);
+            }
+
+            self.text_records.push(compressed);
             offset = end;
         }
 
-        // Add at least one record even if empty
         if self.text_records.is_empty() {
             self.text_records.push(Vec::new());
         }
 
-        // Store uncompressed text length for MOBI header
-        // This must match exactly what the decompressor will produce
         self.text_length = html_content.len() as u32;
 
         Ok(())
@@ -924,9 +997,10 @@ impl MobiBuilder {
         exth
     }
 
-    /// Build MOBI 6 header (Record 0 content, after PalmDB header)
-    /// Uses 264-byte header. The extra bytes beyond 232 are needed because
-    /// our parser reads ncx_index from offset 244.
+    /// Build MOBI 6 header (Record 0 content, after PalmDB header).
+    /// Pure MOBI 6 uses a 232-byte header with no KF8 extensions.
+    /// NCX index goes into extra record index [2] (offset 48).
+    /// TBS is signalled via extra_data_flags at offset 240-243.
     fn build_mobi_header(&self, text_length: u32, index_record_count: usize) -> Vec<u8> {
         let mut header = Vec::new();
 
@@ -940,7 +1014,6 @@ impl MobiBuilder {
         header.extend_from_slice(&text_length.to_be_bytes());
 
         // Offset 8: Text record count (2 bytes)
-        // Parser uses this as `1..=count` to read text records
         let record_count = self.text_records.len() as u16;
         header.extend_from_slice(&record_count.to_be_bytes());
 
@@ -956,13 +1029,13 @@ impl MobiBuilder {
         // Offset 16: Ident (4 bytes) - "MOBI"
         header.extend_from_slice(b"MOBI");
 
-        // Offset 20: Header length (4 bytes) - 264
-        header.extend_from_slice(&264u32.to_be_bytes());
+        // Offset 20: Header length (4 bytes) - 232 for pure MOBI 6
+        header.extend_from_slice(&232u32.to_be_bytes());
 
         // Offset 24: Book type (4 bytes) - 2 = standard book
         header.extend_from_slice(&2u32.to_be_bytes());
 
-        // Offset 28: Text encoding (4 bytes) - 65001 = UTF-8
+        // Offset 28: Text encoding (4 bytes)
         let codepage: u32 = match self.config.encoding {
             MobiEncoding::Utf8 => 65001,
             MobiEncoding::Cp1252 => 1252,
@@ -984,7 +1057,7 @@ impl MobiBuilder {
 
         header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // [0] meta orth
         header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // [1] meta infl
-        header.extend_from_slice(&ncx_index.to_be_bytes()); // [2] orth (NCX)
+        header.extend_from_slice(&ncx_index.to_be_bytes()); // [2] NCX index
         for _ in 0..7 {
             header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes()); // [3-9]
         }
@@ -1043,51 +1116,23 @@ impl MobiBuilder {
         // Offset 184-191: Unknown (8 bytes)
         header.extend_from_slice(&0u64.to_be_bytes());
 
-        // Offset 192-195: FDST first content record
-        header.extend_from_slice(&1u32.to_be_bytes());
-
-        // Offset 196-199: FDST last content record
-        header.extend_from_slice(&(self.text_records.len() as u32).to_be_bytes());
-
-        // Offset 200-207: FCIS record index + count
-        let flis_record = (self.text_records.len() as u32)
-            + 1
-            + index_record_count as u32
-            + self.image_records.len() as u32;
-        let fcis_record = flis_record + 1;
-        header.extend_from_slice(&fcis_record.to_be_bytes());
-        header.extend_from_slice(&1u32.to_be_bytes());
-
-        // Offset 208-215: FLIS record index + count
-        header.extend_from_slice(&flis_record.to_be_bytes());
-        header.extend_from_slice(&1u32.to_be_bytes());
-
-        // Offset 216-223: Unknown (8 bytes)
+        // Offset 192-199: Unknown (8 bytes of 0)
         header.extend_from_slice(&0u64.to_be_bytes());
 
-        // Offset 224-227: SRCS record (NULL)
-        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
+        // Offset 200-207: Unknown (8 bytes of 0)
+        header.extend_from_slice(&0u64.to_be_bytes());
 
-        // Offset 228-231: SRCS count (0)
-        header.extend_from_slice(&0u32.to_be_bytes());
+        // Offset 208-215: Unknown (8 bytes of 0)
+        header.extend_from_slice(&0u64.to_be_bytes());
 
-        // Offset 232-239: Unknown (8 bytes of 0xFF)
-        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-        header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
+        // Offset 216-223: Unknown (8 bytes of 0)
+        header.extend_from_slice(&0u64.to_be_bytes());
 
-        // Offset 240: Extra data flags (4 bytes)
-        header.extend_from_slice(&0u32.to_be_bytes());
+        // Offset 224-231: Unknown (8 bytes of 0)
+        header.extend_from_slice(&0u64.to_be_bytes());
 
-        // Offset 244-247: NCX index (our parser reads this at data[0xF4])
-        header.extend_from_slice(&ncx_index.to_be_bytes());
-
-        // Offset 248-263: Remaining fields (NULL)
-        for _ in 0..4 {
-            header.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-        }
-
-        // Total: 264 bytes
-        assert_eq!(header.len(), 264, "MOBI header must be exactly 264 bytes");
+        // Total: 232 bytes
+        assert_eq!(header.len(), 232, "MOBI 6 header must be exactly 232 bytes");
         header
     }
 
@@ -1095,7 +1140,7 @@ impl MobiBuilder {
     fn build_record0(&self, text_length: u32, index_record_count: usize) -> Vec<u8> {
         let mut record0 = self.build_mobi_header(text_length, index_record_count);
 
-        // Add EXTH metadata header (after MOBI header at offset 264)
+        // Add EXTH metadata header (after MOBI header at offset 232)
         let exth = self.build_exth_header();
         if !exth.is_empty() {
             record0.extend_from_slice(&exth);
@@ -1113,204 +1158,90 @@ impl MobiBuilder {
         record0
     }
 
-    /// Build TOC index records using the shared mobi::index module.
-    /// Returns (INDX records, CNCX data) or None if no TOC.
-    fn build_toc_index(&self, html_content: &str) -> Option<(Vec<Vec<u8>>, Vec<u8>)> {
-        if self.toc.is_empty() {
+    /// Build binary TOC index records (INDX + CNCX) for the Kindle TOC panel.
+    fn build_toc_index(&self) -> Option<(Vec<Vec<u8>>, Vec<u8>)> {
+        if self.ncx_entries.is_empty() {
             return None;
         }
 
-        let entries = flatten_toc_for_mobi(
-            &self.toc,
-            html_content,
-            &self.chapter_positions,
-            self.text_length,
-        );
-
-        eprintln!("MOBI TOC: {} entries with positions", entries.len());
-
-        if entries.is_empty() {
-            return None;
-        }
-
-        Some(build_ncx_indx(&entries))
+        eprintln!("MOBI TOC: {} entries with positions", self.ncx_entries.len());
+        Some(build_ncx_indx(&self.ncx_entries))
     }
 
-    /// Build FLIS record (Record 142 in reference file)
-    fn build_flis_record(&self) -> Vec<u8> {
-        let mut flis = Vec::new();
-
-        // Magic (4 bytes)
-        flis.extend_from_slice(b"FLIS");
-
-        // Header length (4 bytes) - 8
-        flis.extend_from_slice(&8u32.to_be_bytes());
-
-        // Unknown (1 byte) - 0x41
-        flis.push(0x41);
-
-        // Unknown (3 bytes) - 0
-        flis.extend_from_slice(&[0, 0, 0]);
-
-        // Unknown (4 bytes) - 0xFFFFFFFF
-        flis.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000001
-        flis.extend_from_slice(&1u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000003
-        flis.extend_from_slice(&3u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000003
-        flis.extend_from_slice(&3u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000001
-        flis.extend_from_slice(&1u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0xFFFFFFFF
-        flis.extend_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-
-        flis
-    }
-
-    /// Build FCIS record (Record 143 in reference file)
-    fn build_fcis_record(&self) -> Vec<u8> {
-        let mut fcis = Vec::new();
-
-        // Magic (4 bytes)
-        fcis.extend_from_slice(b"FCIS");
-
-        // Header length (4 bytes) - 20 (0x14)
-        fcis.extend_from_slice(&20u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000010
-        fcis.extend_from_slice(&16u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000001
-        fcis.extend_from_slice(&1u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        fcis.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000007
-        fcis.extend_from_slice(&7u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x396F0000
-        fcis.extend_from_slice(&0x396F0000u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        fcis.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0
-        fcis.extend_from_slice(&0u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000020
-        fcis.extend_from_slice(&32u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000008
-        fcis.extend_from_slice(&8u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000001
-        fcis.extend_from_slice(&1u32.to_be_bytes());
-
-        // Unknown (4 bytes) - 0x00000001
-        fcis.extend_from_slice(&1u32.to_be_bytes());
-
-        fcis
-    }
-
-    /// Build EOF marker (Record 144 in reference file)
+    /// Build EOF marker
     fn build_eof_marker(&self) -> Vec<u8> {
         vec![0xE9, 0x8E, 0x0D, 0x0A]
     }
 
     /// Write the complete PDB file
-    fn write<W: Write + Seek>(&mut self, writer: &mut W, html_content: &str) -> io::Result<()> {
-        // Build TOC index records (INDX header + data + CNCX)
-        let toc_index = self.build_toc_index(html_content);
+    fn write<W: Write + Seek>(&mut self, writer: &mut W) -> io::Result<()> {
+        // Build binary TOC index (INDX + CNCX) for Kindle TOC panel
+        let toc_index = self.build_toc_index();
         let (indx_records, cncx_data) = match &toc_index {
             Some((records, cncx)) => (records.clone(), cncx.clone()),
             None => (Vec::new(), Vec::new()),
         };
         let index_record_count = indx_records.len() + if cncx_data.is_empty() { 0 } else { 1 };
 
-        let flis_record = self.build_flis_record();
-        let fcis_record = self.build_fcis_record();
         let eof_marker = self.build_eof_marker();
 
-        // Calculate total number of records
-        // Record 0 + text records + index records + CNCX + image records + FLIS/FCIS/EOF
-        let num_records =
-            1 + self.text_records.len() + index_record_count + self.image_records.len() + 3;
+        // Record layout: Record 0 + text records + INDX/CNCX + image records + EOF
+        let num_records = 1 + self.text_records.len() + index_record_count
+            + self.image_records.len() + 1;
 
-        // Build PalmDB header
         let pdb_header = self.build_palmdb_header(num_records as u16);
-
-        // Build Record 0 (MOBI header + EXTH + title)
         let record0 = self.build_record0(self.text_length, index_record_count);
 
         // Calculate record offsets
         let mut offsets = Vec::new();
         let mut offset = pdb_header.len() + 8 * num_records + 2; // + gap
 
-        // Record 0 offset
+        // Record 0
         offsets.push(offset);
         offset += record0.len();
 
-        // Text record offsets
+        // Text records
         for record in &self.text_records {
             offsets.push(offset);
             offset += record.len();
         }
 
-        // INDX record offsets
+        // INDX records
         for record in &indx_records {
             offsets.push(offset);
             offset += record.len();
         }
 
-        // CNCX record offset
+        // CNCX record
         if !cncx_data.is_empty() {
             offsets.push(offset);
             offset += cncx_data.len();
         }
 
-        // Image record offsets
+        // Image records
         for record in &self.image_records {
             offsets.push(offset);
             offset += record.len();
         }
 
-        // FLIS/FCIS/EOF record offsets (last 3 records)
+        // EOF marker
         offsets.push(offset);
-        offset += flis_record.len();
-
-        offsets.push(offset);
-        offset += fcis_record.len();
-
-        offsets.push(offset);
-        // EOF marker is last record, no need to calculate next offset
 
         // Write PalmDB header
         writer.write_all(&pdb_header)?;
 
         // Write record info list (8 bytes per record)
         for (i, &record_offset) in offsets.iter().enumerate() {
-            // Offset (4 bytes) - must be u32 for PalmDB format
             writer.write_all(&(record_offset as u32).to_be_bytes())?;
-
-            // Attributes (1 byte)
             writer.write_all(&[0x00])?;
-
-            // Unique ID (3 bytes) - 2*i
             let unique_id = (2 * i) as u32;
             writer.write_all(&unique_id.to_be_bytes()[1..4])?;
         }
 
-        // Write gap (2 bytes)
+        // Write gap
         writer.write_all(&[0x00, 0x00])?;
 
-        // Write Record 0 (MOBI header + EXTH + title)
+        // Write Record 0
         writer.write_all(&record0)?;
 
         // Write text records
@@ -1331,9 +1262,7 @@ impl MobiBuilder {
             writer.write_all(record)?;
         }
 
-        // Write FLIS/FCIS/EOF records
-        writer.write_all(&flis_record)?;
-        writer.write_all(&fcis_record)?;
+        // Write EOF marker
         writer.write_all(&eof_marker)?;
 
         Ok(())
@@ -1353,8 +1282,34 @@ impl Exporter for MobiExporter {
         let (html_content, chapter_positions) = self.collect_html_content(book)?;
         builder.chapter_positions = chapter_positions.clone();
 
-        // Set start reading position (first chapter body text)
-        if let Some(first_pos) = chapter_positions.values().min() {
+        // Build HTML TOC and prepend to content (pure MOBI 6 navigation)
+        let toc = builder.toc.clone();
+        let html_content = if toc.is_empty() {
+            html_content
+        } else {
+            let toc_html = self.build_html_toc(&toc, &chapter_positions);
+            let toc_len = toc_html.len() as u32;
+
+            // Shift all chapter positions by TOC length
+            let mut shifted_positions = HashMap::new();
+            for (key, &pos) in &chapter_positions {
+                shifted_positions.insert(key.clone(), pos + toc_len);
+            }
+            builder.chapter_positions = shifted_positions;
+
+            // Update start reading offset to skip TOC
+            builder.start_reading_offset = toc_len;
+
+            // Prepend TOC to body content
+            let mut full_html = toc_html;
+            full_html.push_str(&html_content);
+            full_html
+        };
+
+        // Set start reading position if not already set by TOC
+        if builder.start_reading_offset == 0
+            && let Some(first_pos) = chapter_positions.values().min()
+        {
             builder.start_reading_offset = *first_pos;
         }
 
@@ -1362,17 +1317,26 @@ impl Exporter for MobiExporter {
         let html_content = self.update_image_references(&html_content, &builder);
 
         // Remove cover image from body HTML to avoid dual cover
-        // (MOBI stores the cover as a dedicated image record via EXTH header)
         let html_content = self.strip_cover_from_body(&html_content, &builder);
 
         // Resolve internal links to MOBI filepos references
-        let html_content = self.resolve_internal_links(&html_content, &chapter_positions);
+        let html_content = self.resolve_internal_links(&html_content, &builder.chapter_positions);
 
-        // Build text records
+        // Flatten TOC into binary NCX entries (for INDX/CNCX records + TBS)
+        if !builder.toc.is_empty() {
+            builder.ncx_entries = flatten_toc_for_mobi(
+                &builder.toc,
+                &html_content,
+                &builder.chapter_positions,
+                html_content.len() as u32,
+            );
+        }
+
+        // Build text records (with TBS appended for chapter context)
         builder.build_text_records(&html_content)?;
 
         // Write file
-        builder.write(writer, &html_content)?;
+        builder.write(writer)?;
 
         // Emit warnings if any
         for warning in &builder.warnings {
@@ -1381,13 +1345,6 @@ impl Exporter for MobiExporter {
 
         Ok(())
     }
-}
-
-/// Check if two asset paths refer to the same file, normalizing slashes and case.
-fn paths_match(asset_path: &str, cover_path: &str) -> bool {
-    let a = asset_path.replace('\\', "/").to_lowercase();
-    let c = cover_path.replace('\\', "/").to_lowercase();
-    a == c || a.ends_with(&format!("/{}", c)) || c.ends_with(&format!("/{}", a))
 }
 
 #[cfg(test)]

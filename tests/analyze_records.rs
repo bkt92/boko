@@ -72,29 +72,58 @@ fn main() -> io::Result<()> {
 
     println!("Record 0: MOBI header");
     println!("Records 1-{:?}: {} text records", text_count, text_count);
-    println!("Records {:?}-{:?}: {} INDX records",
-             record_info.iter().find(|(_, _, _, t)| *t == "INDX").map(|(i, _, _, _)| i).unwrap_or(&0),
-             indx_count, indx_count);
-    println!("Records {:?}-{:?}: {} image records",
-             record_info.iter().find(|(_, _, _, t)| *t == "JPEG" || *t == "PNG").map(|(i, _, _, _)| i).unwrap_or(&0),
-             image_count, image_count);
+    println!(
+        "Records {:?}-{:?}: {} INDX records",
+        record_info
+            .iter()
+            .find(|(_, _, _, t)| *t == "INDX")
+            .map(|(i, _, _, _)| i)
+            .unwrap_or(&0),
+        indx_count,
+        indx_count
+    );
+    println!(
+        "Records {:?}-{:?}: {} image records",
+        record_info
+            .iter()
+            .find(|(_, _, _, t)| *t == "JPEG" || *t == "PNG")
+            .map(|(i, _, _, _)| i)
+            .unwrap_or(&0),
+        image_count,
+        image_count
+    );
 
     // Print detailed breakdown
     println!("\n=== Detailed Record Breakdown ===");
     for (idx, start, size, rtype) in &record_info {
         if *idx == 0 {
-            println!("Record 0: MOBI header, offset={}, size={} bytes", start, size);
+            println!(
+                "Record 0: MOBI header, offset={}, size={} bytes",
+                start, size
+            );
         } else if *rtype == "INDX" {
-            println!("Record {}: {}, offset={}, size={} bytes", idx, rtype, start, size);
+            println!(
+                "Record {}: {}, offset={}, size={} bytes",
+                idx, rtype, start, size
+            );
         } else if *rtype == "JPEG" || *rtype == "PNG" {
-            println!("Record {}: {}, offset={}, size={} bytes", idx, rtype, start, size);
+            println!(
+                "Record {}: {}, offset={}, size={} bytes",
+                idx, rtype, start, size
+            );
         }
     }
 
     // Print first and last text records
     println!("\n=== Text Records ===");
-    let first_text_idx = record_info.iter().position(|(_, _, _, t)| *t == "Text").unwrap_or(1);
-    let last_text_idx = record_info.iter().rposition(|(_, _, _, t)| *t == "Text").unwrap_or(1);
+    let first_text_idx = record_info
+        .iter()
+        .position(|(_, _, _, t)| *t == "Text")
+        .unwrap_or(1);
+    let last_text_idx = record_info
+        .iter()
+        .rposition(|(_, _, _, t)| *t == "Text")
+        .unwrap_or(1);
     println!("First text record: {}", first_text_idx);
     println!("Last text record: {}", last_text_idx);
     println!("Total text records: {}", text_count);

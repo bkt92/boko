@@ -64,7 +64,8 @@ fn main() -> std::io::Result<()> {
     println!("=== MOBI Header Comparison ===\n");
     println!("Reference: {}", ref_path);
     println!("Generated: {}", gen_path);
-    println!("File sizes: {} vs {} bytes\n",
+    println!(
+        "File sizes: {} vs {} bytes\n",
         ref_data.len(),
         gen_data.len()
     );
@@ -93,7 +94,10 @@ fn main() -> std::io::Result<()> {
 
     // Check first few record offsets
     println!("\n=== First 10 Record Offsets ===");
-    for i in 0..10.min(ref_num_records as usize).min(gen_num_records as usize) {
+    for i in 0..10
+        .min(ref_num_records as usize)
+        .min(gen_num_records as usize)
+    {
         let ref_off = u32::from_be_bytes([
             ref_data[78 + i * 8],
             ref_data[78 + i * 8 + 1],
@@ -144,8 +148,16 @@ fn main() -> std::io::Result<()> {
     let ref_rec1_data = &ref_data[ref_rec1_off..ref_rec2_off];
     let gen_rec1_data = &gen_data[gen_rec1_off..gen_rec2_off];
 
-    println!("Record 1 size: {} vs {} bytes", ref_rec1_data.len(), gen_rec1_data.len());
-    println!("Record 1 first 20 bytes: {:?} vs {:?}", &ref_rec1_data[..20.min(ref_rec1_data.len())], &gen_rec1_data[..20.min(gen_rec1_data.len())]);
+    println!(
+        "Record 1 size: {} vs {} bytes",
+        ref_rec1_data.len(),
+        gen_rec1_data.len()
+    );
+    println!(
+        "Record 1 first 20 bytes: {:?} vs {:?}",
+        &ref_rec1_data[..20.min(ref_rec1_data.len())],
+        &gen_rec1_data[..20.min(gen_rec1_data.len())]
+    );
 
     // Check EXTH header
     println!("\n=== EXTH Header Check ===");
@@ -167,18 +179,17 @@ fn main() -> std::io::Result<()> {
         gen_data[gen_mobi_off + 0x83],
     ]);
 
-    println!("EXTH flags: 0x{:08X} vs 0x{:08X}", ref_exth_flags, gen_exth_flags);
+    println!(
+        "EXTH flags: 0x{:08X} vs 0x{:08X}",
+        ref_exth_flags, gen_exth_flags
+    );
 
     // Check extra_flags at 0xF2
-    let ref_extra = u16::from_be_bytes([
-        ref_data[ref_mobi_off + 0xF2],
-        ref_data[ref_mobi_off + 0xF3],
-    ]);
+    let ref_extra =
+        u16::from_be_bytes([ref_data[ref_mobi_off + 0xF2], ref_data[ref_mobi_off + 0xF3]]);
 
-    let gen_extra = u16::from_be_bytes([
-        gen_data[gen_mobi_off + 0xF2],
-        gen_data[gen_mobi_off + 0xF3],
-    ]);
+    let gen_extra =
+        u16::from_be_bytes([gen_data[gen_mobi_off + 0xF2], gen_data[gen_mobi_off + 0xF3]]);
 
     println!("Extra flags: 0x{:04X} vs 0x{:04X}", ref_extra, gen_extra);
 

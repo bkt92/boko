@@ -65,26 +65,75 @@ fn main() -> io::Result<()> {
 
         println!("\n=== Record {} (INDX) detailed analysis ===", idx);
         println!("Magic: {:?}", String::from_utf8_lossy(&indx_data[0..4]));
-        println!("Header length: {}", u32::from_be_bytes([indx_data[4], indx_data[5], indx_data[6], indx_data[7]]));
-        println!("Header type: {}", u32::from_be_bytes([indx_data[8], indx_data[9], indx_data[10], indx_data[11]]));
-        println!("IDXT start: {}", u32::from_be_bytes([indx_data[20], indx_data[21], indx_data[22], indx_data[23]]));
-        println!("Entry count: {}", u32::from_be_bytes([indx_data[24], indx_data[25], indx_data[26], indx_data[27]]));
-        println!("Encoding: {}", u32::from_be_bytes([indx_data[28], indx_data[29], indx_data[30], indx_data[31]]));
-        println!("Total entries: {}", u32::from_be_bytes([indx_data[36], indx_data[37], indx_data[38], indx_data[39]]));
-        println!("ORDT offset: {}", u32::from_be_bytes([indx_data[40], indx_data[41], indx_data[42], indx_data[43]]));
-        println!("LIGT offset: {}", u32::from_be_bytes([indx_data[44], indx_data[45], indx_data[46], indx_data[47]]));
-        println!("Num LIGT: {}", u32::from_be_bytes([indx_data[48], indx_data[49], indx_data[50], indx_data[51]]));
-        println!("Num CNCX: {}", u32::from_be_bytes([indx_data[52], indx_data[53], indx_data[54], indx_data[55]]));
-        println!("TAGX offset: {}", u32::from_be_bytes([indx_data[180], indx_data[181], indx_data[182], indx_data[183]]));
+        println!(
+            "Header length: {}",
+            u32::from_be_bytes([indx_data[4], indx_data[5], indx_data[6], indx_data[7]])
+        );
+        println!(
+            "Header type: {}",
+            u32::from_be_bytes([indx_data[8], indx_data[9], indx_data[10], indx_data[11]])
+        );
+        println!(
+            "IDXT start: {}",
+            u32::from_be_bytes([indx_data[20], indx_data[21], indx_data[22], indx_data[23]])
+        );
+        println!(
+            "Entry count: {}",
+            u32::from_be_bytes([indx_data[24], indx_data[25], indx_data[26], indx_data[27]])
+        );
+        println!(
+            "Encoding: {}",
+            u32::from_be_bytes([indx_data[28], indx_data[29], indx_data[30], indx_data[31]])
+        );
+        println!(
+            "Total entries: {}",
+            u32::from_be_bytes([indx_data[36], indx_data[37], indx_data[38], indx_data[39]])
+        );
+        println!(
+            "ORDT offset: {}",
+            u32::from_be_bytes([indx_data[40], indx_data[41], indx_data[42], indx_data[43]])
+        );
+        println!(
+            "LIGT offset: {}",
+            u32::from_be_bytes([indx_data[44], indx_data[45], indx_data[46], indx_data[47]])
+        );
+        println!(
+            "Num LIGT: {}",
+            u32::from_be_bytes([indx_data[48], indx_data[49], indx_data[50], indx_data[51]])
+        );
+        println!(
+            "Num CNCX: {}",
+            u32::from_be_bytes([indx_data[52], indx_data[53], indx_data[54], indx_data[55]])
+        );
+        println!(
+            "TAGX offset: {}",
+            u32::from_be_bytes([
+                indx_data[180],
+                indx_data[181],
+                indx_data[182],
+                indx_data[183]
+            ])
+        );
 
         // Check if TAGX is present
-        let tagx_offset = u32::from_be_bytes([indx_data[180], indx_data[181], indx_data[182], indx_data[183]]) as usize;
+        let tagx_offset = u32::from_be_bytes([
+            indx_data[180],
+            indx_data[181],
+            indx_data[182],
+            indx_data[183],
+        ]) as usize;
         if tagx_offset > 0 && tagx_offset + 12 <= 240 {
             println!("\nTAGX section at offset {}:", tagx_offset);
             let tagx_data = &indx_data[tagx_offset..];
             println!("  Magic: {:?}", String::from_utf8_lossy(&tagx_data[0..4]));
-            println!("  First entry offset: {}", u32::from_be_bytes([tagx_data[4], tagx_data[5], tagx_data[6], tagx_data[7]]));
-            println!("  Control byte count: {}", u32::from_be_bytes([tagx_data[8], tagx_data[9], tagx_data[10], tagx_data[11]]));
+            println!(
+                "  First entry offset: {}",
+                u32::from_be_bytes([tagx_data[4], tagx_data[5], tagx_data[6], tagx_data[7]])
+            );
+            println!(
+                "  Control byte count: {}",
+                u32::from_be_bytes([tagx_data[8], tagx_data[9], tagx_data[10], tagx_data[11]])
+            );
         }
 
         // Print hex dump of first 64 bytes
@@ -107,10 +156,22 @@ fn main() -> io::Result<()> {
 
         println!("\n=== Record {} (INDX) detailed analysis ===", idx);
         println!("Magic: {:?}", String::from_utf8_lossy(&indx_data[0..4]));
-        println!("Header length: {}", u32::from_be_bytes([indx_data[4], indx_data[5], indx_data[6], indx_data[7]]));
-        println!("Header type: {}", u32::from_be_bytes([indx_data[8], indx_data[9], indx_data[10], indx_data[11]]));
-        println!("IDXT start: {}", u32::from_be_bytes([indx_data[20], indx_data[21], indx_data[22], indx_data[23]]));
-        println!("Entry count: {}", u32::from_be_bytes([indx_data[24], indx_data[25], indx_data[26], indx_data[27]]));
+        println!(
+            "Header length: {}",
+            u32::from_be_bytes([indx_data[4], indx_data[5], indx_data[6], indx_data[7]])
+        );
+        println!(
+            "Header type: {}",
+            u32::from_be_bytes([indx_data[8], indx_data[9], indx_data[10], indx_data[11]])
+        );
+        println!(
+            "IDXT start: {}",
+            u32::from_be_bytes([indx_data[20], indx_data[21], indx_data[22], indx_data[23]])
+        );
+        println!(
+            "Entry count: {}",
+            u32::from_be_bytes([indx_data[24], indx_data[25], indx_data[26], indx_data[27]])
+        );
 
         // Print hex dump of first 64 bytes
         println!("\nFirst 64 bytes (hex):");

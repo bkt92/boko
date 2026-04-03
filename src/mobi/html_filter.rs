@@ -162,17 +162,37 @@ mod tests {
     fn test_strip_aid_attribute() {
         let html = r#"<p aid="0001">Hello</p><div aid="00AB">World</div>"#;
         let result = strip_mobi_artifacts(html);
-        assert!(!result.contains("aid="), "aid should be removed: {}", result);
-        assert!(result.contains("Hello</p>"), "content preserved: {}", result);
-        assert!(result.contains("World</div>"), "content preserved: {}", result);
+        assert!(
+            !result.contains("aid="),
+            "aid should be removed: {}",
+            result
+        );
+        assert!(
+            result.contains("Hello</p>"),
+            "content preserved: {}",
+            result
+        );
+        assert!(
+            result.contains("World</div>"),
+            "content preserved: {}",
+            result
+        );
     }
 
     #[test]
     fn test_strip_amzn_data_attributes() {
         let html = r#"<p data-AmznRemoved="true">Text</p><span data-amzn-track="1">More</span>"#;
         let result = strip_mobi_artifacts(html);
-        assert!(!result.contains("data-Amzn"), "data-Amzn should be removed: {}", result);
-        assert!(!result.contains("data-amzn"), "data-amzn should be removed: {}", result);
+        assert!(
+            !result.contains("data-Amzn"),
+            "data-Amzn should be removed: {}",
+            result
+        );
+        assert!(
+            !result.contains("data-amzn"),
+            "data-amzn should be removed: {}",
+            result
+        );
         assert!(result.contains("Text</p>"));
         assert!(result.contains("More</span>"));
     }
@@ -186,6 +206,9 @@ mod tests {
         assert!(!result.contains("aid="), "aid attributes removed");
         assert!(!result.contains("data-Amzn"), "data-Amzn removed");
         assert!(result.contains("Chapter</p>"), "content preserved");
-        assert!(result.contains(r#"src="cover.jpg""#), "img src preserved without amzn attr");
+        assert!(
+            result.contains(r#"src="cover.jpg""#),
+            "img src preserved without amzn attr"
+        );
     }
 }

@@ -264,10 +264,20 @@ impl EpubImporter {
             path_to_chapter.insert(base_path.to_string(), ChapterId(i as u32));
         }
 
+        // Ensure cover_image matches an entry in the assets list (canonical path contract).
+        // OPF hrefs are relative to the OPF file; assets are full ZIP paths.
+        let mut metadata = opf.metadata;
+        if let Some(ref href) = metadata.cover_image {
+            let full_path = format!("{}{}", opf_base, href);
+            if assets.iter().any(|a| a.to_string_lossy() == full_path) {
+                metadata.cover_image = Some(full_path);
+            }
+        }
+
         Ok(Self {
             source,
             zip_index,
-            metadata: opf.metadata,
+            metadata,
             toc,
             landmarks,
             spine,

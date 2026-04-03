@@ -39,7 +39,8 @@ fn main() -> io::Result<()> {
     File::open("/tmp/test.mobi")?.read_to_end(&mut mobi_data)?;
 
     let num_records = u16::from_be_bytes([mobi_data[76], mobi_data[77]]);
-    let mobi_off = u32::from_be_bytes([mobi_data[78], mobi_data[79], mobi_data[80], mobi_data[81]]) as usize;
+    let mobi_off =
+        u32::from_be_bytes([mobi_data[78], mobi_data[79], mobi_data[80], mobi_data[81]]) as usize;
 
     let text_len = u32::from_be_bytes([
         mobi_data[mobi_off + 4],
@@ -63,7 +64,10 @@ fn main() -> io::Result<()> {
     // The issue
     if text_len as i64 > html_len as i64 {
         println!("\n⚠️  PROBLEM FOUND:");
-        println!("   Text length field is {} bytes larger than actual HTML", text_len - html_len as u32);
+        println!(
+            "   Text length field is {} bytes larger than actual HTML",
+            text_len - html_len as u32
+        );
         println!("   PalmDoc decompressor will expect {} bytes", text_len);
         println!("   But compressed data only contains {} bytes", html_len);
         println!("   This causes 'unexpected end of input' error");

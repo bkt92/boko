@@ -23,10 +23,15 @@ fn main() -> std::io::Result<()> {
     let mobi_offset = u32::from_be_bytes([data[78], data[79], data[80], data[81]]) as usize;
 
     println!("=== PalmDB Header ===");
-    println!("Database name: {:?}",
-        String::from_utf8_lossy(&data[0..32]).trim_end_matches('\0'));
+    println!(
+        "Database name: {:?}",
+        String::from_utf8_lossy(&data[0..32]).trim_end_matches('\0')
+    );
     println!("Number of records: {}", num_records);
-    println!("MOBI header offset: 0x{:04X} ({} bytes)\n", mobi_offset, mobi_offset);
+    println!(
+        "MOBI header offset: 0x{:04X} ({} bytes)\n",
+        mobi_offset, mobi_offset
+    );
 
     // MOBI header
     println!("=== MOBI Header (at offset 0x{:04X}) ===", mobi_offset);
@@ -52,8 +57,11 @@ fn main() -> std::io::Result<()> {
         data[mobi_offset + 107],
     ]);
 
-    println!("Compression: {} ({}=PalmDoc)", compression,
-        if compression == 2 { "2" } else { "?" });
+    println!(
+        "Compression: {} ({}=PalmDoc)",
+        compression,
+        if compression == 2 { "2" } else { "?" }
+    );
     println!("Text length: {} bytes", text_length);
     println!("Text record count: {}", text_record_count);
     println!("Text record size: {} bytes", text_record_size);
@@ -69,10 +77,7 @@ fn main() -> std::io::Result<()> {
     ]);
 
     // Extra flags
-    let extra_flags = u16::from_be_bytes([
-        data[mobi_offset + 0xF2],
-        data[mobi_offset + 0xF3],
-    ]);
+    let extra_flags = u16::from_be_bytes([data[mobi_offset + 0xF2], data[mobi_offset + 0xF3]]);
 
     println!("EXTH flags: 0x{:08X}", exth_flags);
     println!("Extra flags (0xF2): 0x{:04X}\n", extra_flags);
@@ -117,7 +122,12 @@ fn main() -> std::io::Result<()> {
         ]) as usize;
 
         let attrs = data[78 + i * 8 + 4];
-        let unique_id = u32::from_be_bytes([0, data[78 + i * 8 + 5], data[78 + i * 8 + 6], data[78 + i * 8 + 7]]);
+        let unique_id = u32::from_be_bytes([
+            0,
+            data[78 + i * 8 + 5],
+            data[78 + i * 8 + 6],
+            data[78 + i * 8 + 7],
+        ]);
 
         let size = if i + 1 < (num_records as usize) {
             let next_offset = u32::from_be_bytes([
@@ -131,8 +141,10 @@ fn main() -> std::io::Result<()> {
             data.len() - offset
         };
 
-        println!("Record {}: offset=0x{:06X} ({}), size={}, attrs=0x{:02X}, id={}",
-            i, offset, offset, size, attrs, unique_id);
+        println!(
+            "Record {}: offset=0x{:06X} ({}), size={}, attrs=0x{:02X}, id={}",
+            i, offset, offset, size, attrs, unique_id
+        );
 
         if i < 10 {
             // Show first few bytes

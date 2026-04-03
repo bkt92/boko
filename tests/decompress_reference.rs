@@ -17,10 +17,7 @@ fn main() -> io::Result<()> {
         data[mobi_off + 7],
     ]) as usize;
 
-    let text_count = u16::from_be_bytes([
-        data[mobi_off + 8],
-        data[mobi_off + 9],
-    ]) as usize;
+    let text_count = u16::from_be_bytes([data[mobi_off + 8], data[mobi_off + 9]]) as usize;
 
     println!("Text length: {} bytes", text_len);
     println!("Text record count: {}", text_count);

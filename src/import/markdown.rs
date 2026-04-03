@@ -362,7 +362,10 @@ impl MarkdownImporter {
             Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(lang)) => {
                 let node_id = builder.push_node(Role::CodeBlock);
                 if !lang.is_empty() {
-                    builder.chapter.semantics.set_language(node_id, lang.as_ref());
+                    builder
+                        .chapter
+                        .semantics
+                        .set_language(node_id, lang.as_ref());
                 }
             }
             Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Indented) => {
