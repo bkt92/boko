@@ -6,6 +6,7 @@
 use std::io::{self, Seek, Write};
 use std::path::Path;
 
+use crate::import::{metadata_to_front_matter, serialize_front_matter};
 use crate::markdown::{build_heading_slugs, render_chapter};
 use crate::model::Book;
 
@@ -85,8 +86,36 @@ impl MarkdownExporter {
             }
         }
 
-        // 4. Render chapters, rewriting image paths
+        // Compute cover relative path for front matter
+        let metadata = book.metadata();
+        let img_dir_name = img_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("images");
+        let cover_relative = metadata.cover_image.as_ref().and_then(|cover| {
+            let cover_norm = cover.replace('\\', "/");
+            if let Some(new_name) = img_map.get(&cover_norm) {
+                Some(format!("{}/{}", img_dir_name, new_name))
+            } else if let Some(fname) = Path::new(cover).file_name().and_then(|f| f.to_str()) {
+                for (old_path, new_name) in &img_map {
+                    if old_path.ends_with(fname) {
+                        return Some(format!("{}/{}", img_dir_name, new_name));
+                    }
+                }
+                None
+            } else {
+                None
+            }
+        });
+
+        // Generate YAML front matter from metadata
+        let fm = metadata_to_front_matter(metadata, cover_relative.as_deref());
         let mut md_content = String::new();
+        if let Some(yaml_header) = serialize_front_matter(&fm) {
+            md_content.push_str(&yaml_header);
+        }
+
+        // 4. Render chapters, rewriting image paths
         let mut first = true;
         for (chapter_id, chapter) in &chapters {
             if !first {
@@ -107,10 +136,6 @@ impl MarkdownExporter {
         }
 
         // Rewrite image references: ![alt](old_path) -> ![alt](img_dir/filename)
-        let img_dir_name = img_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("images");
         for (old_path, new_name) in &img_map {
             // Match both ![alt](old_path) and ![alt](old_path with quotes)
             let old_ref = format!("]({})", old_path);
@@ -155,6 +180,13 @@ impl Exporter for MarkdownExporter {
             .collect::<io::Result<Vec<_>>>()?;
 
         let heading_slugs = build_heading_slugs(&chapters, &resolved);
+
+        // Generate YAML front matter from metadata
+        let metadata = book.metadata();
+        let fm = metadata_to_front_matter(metadata, metadata.cover_image.as_deref());
+        if let Some(yaml_header) = serialize_front_matter(&fm) {
+            write!(writer, "{}", yaml_header)?;
+        }
 
         // 3. Render each chapter (pure) and write (I/O)
         let mut first = true;

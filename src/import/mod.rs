@@ -6,7 +6,7 @@
 
 mod azw3;
 mod epub;
-mod front_matter;
+pub mod front_matter;
 mod kfx;
 mod markdown;
 mod mobi;

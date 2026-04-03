@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::import::{ChapterId, Importer, SpineEntry};
+use crate::import::front_matter::{extract_front_matter, front_matter_to_metadata};
 use crate::io::ByteSource;
 use crate::model::{
     AnchorTarget, Chapter, GlobalNodeId, Landmark, Metadata, Node, NodeId, Role, TocEntry,
@@ -28,6 +29,7 @@ pub struct MarkdownImporter {
     asset_paths: Vec<PathBuf>,
     #[allow(dead_code)]
     config: MarkdownConfig,
+    content_offset: usize,
 }
 
 /// Configuration for Markdown import.
@@ -129,6 +131,7 @@ impl MarkdownImporter {
             anchor_map: HashMap::new(),
             asset_paths: Vec::new(),
             config: MarkdownConfig::default(),
+            content_offset: 0,
         }
     }
 
@@ -140,6 +143,25 @@ impl MarkdownImporter {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in Markdown"))?;
 
         let mut importer = Self::new(PathBuf::from("memory.md"), content);
+
+        // Extract YAML front matter before scanning headings
+        if let Some((fm, offset)) = extract_front_matter(&importer.content) {
+            let base_dir = Path::new(".");
+            importer.metadata = front_matter_to_metadata(&fm, base_dir);
+            importer.content_offset = offset;
+
+            // Register cover image as asset if specified
+            if let Some(ref cover_path) = importer.metadata.cover_image {
+                let cover_full = PathBuf::from(cover_path);
+                if !importer.asset_paths.contains(&cover_full) {
+                    importer.asset_paths.push(cover_full.clone());
+                    if let Ok(bytes) = std::fs::read(&cover_full) {
+                        importer.assets.insert(cover_path.clone(), bytes);
+                    }
+                }
+            }
+        }
+
         importer.scan_headings();
         importer.build_metadata();
 
@@ -149,7 +171,8 @@ impl MarkdownImporter {
     fn scan_headings(&mut self) {
         use pulldown_cmark::{Event, HeadingLevel, Parser, Tag};
 
-        let parser = Parser::new(&self.content);
+        let content = &self.content[self.content_offset..];
+        let parser = Parser::new(content);
         let mut chapter_index = 0;
 
         // If no headings, create single chapter
@@ -173,13 +196,13 @@ impl MarkdownImporter {
                         found_heading = true;
                         // Save previous chapter range
                         if chapter_index > 0 {
-                            let prev_end = range.start;
+                            let prev_end = self.content_offset + range.start;
                             self.chapter_ranges.last_mut().unwrap().end = prev_end;
                         }
 
                         // Start new chapter
                         self.chapter_ranges.push(ChapterRange {
-                            start: range.start,
+                            start: self.content_offset + range.start,
                             end: self.content.len(),
                             virtual_path: format!("chapter-{}.md", chapter_index + 1),
                         });
@@ -300,7 +323,7 @@ impl MarkdownImporter {
         // If no headings found, create single chapter with entire document
         if !found_heading {
             self.chapter_ranges.push(ChapterRange {
-                start: 0,
+                start: self.content_offset,
                 end: self.content.len(),
                 virtual_path: format!("{}.md", file_stem(&self.path)),
             });
@@ -312,6 +335,11 @@ impl MarkdownImporter {
     }
 
     fn build_metadata(&mut self) {
+        // Skip if title already set from front matter
+        if !self.metadata.title.is_empty() {
+            return;
+        }
+
         // Extract title from first heading or filename
         self.metadata.title = self
             .extract_first_heading()
@@ -326,7 +354,8 @@ impl MarkdownImporter {
     fn extract_first_heading(&self) -> Option<String> {
         use pulldown_cmark::{Event, HeadingLevel, Parser, Tag};
 
-        let parser = Parser::new(&self.content);
+        let content = &self.content[self.content_offset..];
+        let parser = Parser::new(content);
         let mut in_heading = false;
 
         for event in parser {
@@ -527,6 +556,24 @@ impl Importer for MarkdownImporter {
 
         // Create importer
         let mut importer = Self::new(path.to_path_buf(), content);
+
+        // Extract YAML front matter before scanning headings
+        if let Some((fm, offset)) = extract_front_matter(&importer.content) {
+            let base_dir = importer.path.parent().unwrap_or(Path::new("."));
+            importer.metadata = front_matter_to_metadata(&fm, base_dir);
+            importer.content_offset = offset;
+
+            // Register cover image as asset if specified
+            if let Some(ref cover_path) = importer.metadata.cover_image {
+                let cover_full = PathBuf::from(cover_path);
+                if !importer.asset_paths.contains(&cover_full) {
+                    importer.asset_paths.push(cover_full.clone());
+                    if let Ok(bytes) = std::fs::read(&cover_full) {
+                        importer.assets.insert(cover_path.clone(), bytes);
+                    }
+                }
+            }
+        }
 
         // Scan for headings (simplified - full implementation in later tasks)
         importer.scan_headings();
