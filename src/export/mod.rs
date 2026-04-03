@@ -28,7 +28,6 @@
 //! ```
 
 use std::io::{self, Seek, Write};
-use std::path::Path;
 
 use crate::model::Book;
 
@@ -66,61 +65,4 @@ pub trait Exporter {
     /// - `std::io::Cursor<Vec<u8>>` for seekable in-memory output
     /// - Any other type implementing `Write + Seek`
     fn export<W: Write + Seek>(&self, book: &mut Book, writer: &mut W) -> io::Result<()>;
-}
-
-/// Resolve the cover image path from metadata against the available asset paths.
-///
-/// Uses progressively broader matching:
-/// 1. Direct match after normalizing separators and case
-/// 2. Suffix match (one path is a parent of the other)
-/// 3. Filename-only match as last resort
-///
-/// Returns the index into `asset_paths` that matches the cover, or `None`.
-pub fn resolve_cover_asset(
-    cover_image: Option<&str>,
-    asset_paths: &[impl AsRef<Path>],
-) -> Option<usize> {
-    let cover = cover_image?;
-    let cover_norm = cover.replace('\\', "/").to_lowercase();
-    let cover_filename = Path::new(cover)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if cover_norm.is_empty() {
-        return None;
-    }
-
-    // Pass 1: Direct or suffix match
-    for (i, asset) in asset_paths.iter().enumerate() {
-        let asset_str = asset.as_ref().to_string_lossy();
-        let asset_norm = asset_str.replace('\\', "/").to_lowercase();
-
-        if asset_norm == cover_norm {
-            return Some(i);
-        }
-        if asset_norm.ends_with(&format!("/{cover_norm}"))
-            || cover_norm.ends_with(&format!("/{asset_norm}"))
-        {
-            return Some(i);
-        }
-    }
-
-    // Pass 2: Filename-only match (handles cross-format path differences)
-    if !cover_filename.is_empty() {
-        for (i, asset) in asset_paths.iter().enumerate() {
-            let asset_filename = asset
-                .as_ref()
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if asset_filename == cover_filename {
-                return Some(i);
-            }
-        }
-    }
-
-    None
 }

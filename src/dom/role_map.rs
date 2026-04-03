@@ -17,7 +17,8 @@ pub fn element_to_role(local_name: &LocalName) -> Role {
         "br" => Role::Break,
 
         // Horizontal rule (thematic break)
-        "hr" => Role::Rule,
+        // Also map MOBI <mbp:pagebreak/> to rule (local name is "pagebreak")
+        "hr" | "pagebreak" => Role::Rule,
 
         // Aside/sidebar
         "aside" => Role::Sidebar,

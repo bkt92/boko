@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::mobi::index::{NcxBuildEntry, build_ncx_indx};
 use crate::model::{AnchorTarget, Book, Metadata, TocEntry};
 
-use super::{Exporter, resolve_cover_asset};
+use super::Exporter;
 
 /// Find a safe UTF-8 boundary near `max_len` bytes from the start.
 ///
@@ -365,19 +365,32 @@ impl MobiExporter {
             // MOBI 6 recindex: 5-digit, 1-based decimal index
             let recindex = format!("{:05}", record_index);
 
-            // Try to match src attributes with various path formats
+            // Build candidate patterns for matching src attributes
+            // The IR may produce paths like "OEBPS/images/photo.jpg" while
+            // image_path_to_record stores "images/photo.jpg"
             let filename = if let Some(name) = Path::new(image_path).file_name() {
                 name.to_string_lossy().to_string()
             } else {
                 image_path.clone()
             };
 
-            let patterns = [
+            let mut patterns = vec![
                 format!("src=\"{}\"", image_path),
                 format!("src='{}'", image_path),
                 format!("src=\"{}\"", filename),
                 format!("src='{}'", filename),
             ];
+
+            // Also try matching with common archive path prefixes
+            // The IR may produce "OEBPS/images/photo.jpg" while the stored
+            // key is "images/photo.jpg" — try prepending common archive roots
+            for prefix in ["OEBPS/", "OPS/", ""] {
+                let candidate = format!("{}{}", prefix, image_path);
+                if candidate != *image_path {
+                    patterns.push(format!("src=\"{}\"", candidate));
+                    patterns.push(format!("src='{}'", candidate));
+                }
+            }
 
             let replacement = format!("recindex=\"{}\"", recindex);
 
@@ -505,6 +518,9 @@ impl MobiExporter {
     }
 
     fn collect_html_content(&self, book: &mut Book) -> io::Result<(String, HashMap<String, u32>)> {
+        use crate::export::html_synth::synthesize_html;
+        use crate::style::StyleId;
+
         let mut html = String::new();
         let mut chapter_positions = HashMap::new();
 
@@ -512,51 +528,54 @@ impl MobiExporter {
         let spine_entries: Vec<_> = book.spine().to_vec();
 
         for (i, entry) in spine_entries.iter().enumerate() {
-            match book.load_raw(entry.id) {
-                Ok(data) => {
-                    // Convert bytes to string, ignoring encoding issues
-                    let chapter_html = String::from_utf8_lossy(&data);
-
-                    // Add page break between chapters (not before first)
-                    if i > 0 {
-                        html.push_str("<mbp:pagebreak/>");
-                    }
-
-                    // Record position AFTER pagebreak, at the anchor/content start
-                    let position = html.len() as u32;
-
-                    // Insert anchor tag at chapter start for TOC linking
-                    let anchor = format!("<a id=\"filepos{}\" />", position);
-                    html.push_str(&anchor);
-
-                    // Store position keyed by ChapterId (for TOC resolution)
-                    let chapter_id = format!("{:?}", entry.id);
-                    chapter_positions.insert(chapter_id, position);
-
-                    // Also store by source path and its variants (for link resolution)
-                    if let Some(source_path) = book.source_id(entry.id) {
-                        chapter_positions.insert(source_path.to_string(), position);
-
-                        // Store filename only (e.g., "chapter1.xhtml" from "OEBPS/text/chapter1.xhtml")
-                        if let Some(fname) = Path::new(source_path).file_name() {
-                            chapter_positions.insert(fname.to_string_lossy().to_string(), position);
-                        }
-
-                        // Store relative path without top-level dir
-                        // "OEBPS/text/chapter1.xhtml" → "text/chapter1.xhtml"
-                        let parts: Vec<_> = source_path.split('/').collect();
-                        if parts.len() > 1 {
-                            let relative = parts[1..].join("/");
-                            chapter_positions.insert(relative, position);
-                        }
-                    }
-
-                    html.push_str(&chapter_html);
-                }
+            // Load chapter through IR pipeline
+            let chapter = match book.load_chapter_cached(entry.id) {
+                Ok(ch) => ch,
                 Err(e) => {
                     eprintln!("Warning: Failed to load chapter {:?}: {}", entry.id, e);
+                    continue;
+                }
+            };
+
+            // Synthesize HTML body from IR (no CSS classes for MOBI 6)
+            let style_map: HashMap<StyleId, String> = HashMap::new();
+            let result = synthesize_html(&chapter, &style_map);
+
+            // Add page break between chapters (not before first)
+            if i > 0 {
+                html.push_str("<mbp:pagebreak/>");
+            }
+
+            // Record position AFTER pagebreak, at the anchor/content start
+            let position = html.len() as u32;
+
+            // Insert anchor tag at chapter start for TOC linking
+            let anchor = format!("<a id=\"filepos{}\" />", position);
+            html.push_str(&anchor);
+
+            // Store position keyed by ChapterId (for TOC resolution)
+            let chapter_id = format!("{:?}", entry.id);
+            chapter_positions.insert(chapter_id, position);
+
+            // Also store by source path and its variants (for link resolution)
+            if let Some(source_path) = book.source_id(entry.id) {
+                chapter_positions.insert(source_path.to_string(), position);
+
+                // Store filename only (e.g., "chapter1.xhtml" from "OEBPS/text/chapter1.xhtml")
+                if let Some(fname) = Path::new(source_path).file_name() {
+                    chapter_positions.insert(fname.to_string_lossy().to_string(), position);
+                }
+
+                // Store relative path without top-level dir
+                // "OEBPS/text/chapter1.xhtml" → "text/chapter1.xhtml"
+                let parts: Vec<_> = source_path.split('/').collect();
+                if parts.len() > 1 {
+                    let relative = parts[1..].join("/");
+                    chapter_positions.insert(relative, position);
                 }
             }
+
+            html.push_str(&result.body);
         }
 
         Ok((html, chapter_positions))
@@ -682,6 +701,8 @@ struct MobiBuilder {
     warnings: Vec<String>,
     /// Configuration
     config: MobiConfig,
+    /// Cover image asset (from IR)
+    cover: Option<crate::model::CoverAsset>,
 }
 
 impl MobiBuilder {
@@ -692,6 +713,9 @@ impl MobiBuilder {
 
         // Collect TOC
         let toc = book.toc().to_vec();
+
+        // Get cover asset
+        let cover = book.cover().cloned();
 
         Ok(Self {
             text_records: Vec::new(),
@@ -706,6 +730,7 @@ impl MobiBuilder {
             ncx_entries: Vec::new(),
             warnings: Vec::new(),
             config,
+            cover,
         })
     }
 
@@ -766,16 +791,30 @@ impl MobiBuilder {
         title
     }
 
-    /// Process images from book assets
+    /// Process images from book assets.
+    ///
+    /// Cover image (from CoverAsset) is written as the first image record with
+    /// a known index, eliminating the need for fuzzy path matching.
     fn process_images(&mut self, book: &mut Book) -> io::Result<()> {
-        // Collect image paths first to avoid borrow checker issues
+        // Write cover image first (known index = 1)
+        if let Some(ref cover) = self.cover {
+            let record_index = self.image_records.len() as u32 + 1;
+            self.image_records.push(cover.data.clone());
+            self.cover_record_index = Some(record_index);
+
+            // Store path mapping so HTML refs to the cover can be rewritten
+            let ext = match cover.media_type.as_str() {
+                "image/png" => "png",
+                "image/gif" => "gif",
+                _ => "jpg",
+            };
+            let cover_href = format!("images/cover.{}", ext);
+            self.image_path_to_record.insert(cover_href, record_index);
+        }
+
+        // Collect image paths and load remaining assets
         let image_paths: Vec<_> = book.list_assets().to_vec();
 
-        // Resolve cover image index using shared resolver
-        let cover_image_idx =
-            resolve_cover_asset(self.metadata.cover_image.as_deref(), &image_paths);
-
-        let mut image_iter_idx = 0usize;
         for image_path in image_paths {
             // Filter to only process actual image files
             let path_str = image_path.to_string_lossy();
@@ -799,29 +838,16 @@ impl MobiBuilder {
                 Err(e) => {
                     self.warnings
                         .push(format!("Failed to load image {:?}: {}", image_path, e));
-                    image_iter_idx += 1;
                     continue; // Skip this image
                 }
             };
 
-            // For MOBI, preserve original image data without reprocessing
-            // This ensures compatibility with readers and prevents quality loss
             if !image_data.is_empty() {
-                // Store original image data
-                // kindle:embed indices are 1-based (Calibre convention: reader does idx-1)
+                // kindle:embed indices are 1-based
                 let record_index = self.image_records.len() as u32 + 1;
                 self.image_records.push(image_data);
 
-                // Detect cover image by index from shared resolver
-                if self.cover_record_index.is_none()
-                    && cover_image_idx.is_some_and(|ci| ci == image_iter_idx)
-                {
-                    self.cover_record_index = Some(record_index);
-                }
-
                 // Store the relative path for HTML replacement
-                // HTML uses paths like "images/image_0015.jpg"
-                // We need to match what's actually in the HTML
                 let relative_path = if let Some(parent) = image_path.parent() {
                     if let Some(dirname) = parent.file_name() {
                         if let Some(filename) = image_path.file_name() {
@@ -843,8 +869,6 @@ impl MobiBuilder {
                 self.image_path_to_record
                     .insert(relative_path, record_index);
             }
-
-            image_iter_idx += 1;
         }
 
         Ok(())
@@ -1268,6 +1292,9 @@ impl MobiBuilder {
 // Exporter trait implementation
 impl Exporter for MobiExporter {
     fn export<W: Write + Seek>(&self, book: &mut Book, writer: &mut W) -> io::Result<()> {
+        // Resolve links so TOC entries have their target field populated
+        book.resolve_links()?;
+
         // Create builder
         let mut builder = MobiBuilder::new(book, self.config.clone())?;
 

@@ -1,6 +1,6 @@
 //! EPUB exporter.
 //!
-//! Creates EPUB 2/3 files from Book structures using passthrough for content.
+//! Creates EPUB 2/3 files from Book structures using the IR pipeline.
 
 use std::collections::HashMap;
 use std::io::{self, Seek, Write};
@@ -10,24 +10,21 @@ use zip::CompressionMethod;
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
-use crate::mobi::html_filter::strip_mobi_artifacts;
-use crate::model::{Book, TocEntry};
+use crate::model::{AnchorTarget, Book, TocEntry};
 
-use super::{Exporter, resolve_cover_asset};
+use super::Exporter;
 
 /// Configuration for EPUB export.
 #[derive(Debug, Clone, Default)]
 pub struct EpubConfig {
     /// Compression level for deflate (0-9, default 6).
     pub compression_level: Option<u32>,
-    /// If true, normalize content through IR pipeline for clean, consistent output.
-    /// Default is false (passthrough mode preserves original HTML/CSS).
-    pub normalize: bool,
 }
 
 /// EPUB format exporter.
 ///
 /// Creates standard EPUB files compatible with most e-readers.
+/// All content passes through the IR pipeline for consistent output.
 ///
 /// # Example
 ///
@@ -68,172 +65,12 @@ impl Default for EpubExporter {
 
 impl Exporter for EpubExporter {
     fn export<W: Write + Seek>(&self, book: &mut Book, writer: &mut W) -> io::Result<()> {
-        // Use normalized mode if explicitly requested OR if the source format requires it
-        // (e.g., KFX raw content is binary Ion, not HTML)
-        if self.config.normalize || book.requires_normalized_export() {
-            self.export_normalized(book, writer)
-        } else {
-            self.export_raw(book, writer)
-        }
-    }
-}
-
-impl EpubExporter {
-    /// Export with passthrough mode (preserves original HTML/CSS).
-    fn export_raw<W: Write + Seek>(&self, book: &mut Book, writer: &mut W) -> io::Result<()> {
-        let mut zip = ZipWriter::new(writer);
-
-        let compression_level = self.config.compression_level.unwrap_or(6);
-        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-        let deflated = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .compression_level(Some(compression_level as i64));
-
-        // 1. Write mimetype (must be first, uncompressed)
-        zip.start_file("mimetype", stored).map_err(io_error)?;
-        zip.write_all(b"application/epub+zip")?;
-
-        // 2. Write container.xml
-        zip.start_file("META-INF/container.xml", deflated)
-            .map_err(io_error)?;
-        zip.write_all(CONTAINER_XML)?;
-
-        // 3. Collect content info for manifest
-        let spine: Vec<_> = book.spine().to_vec();
-        let mut manifest_items: Vec<ManifestItem> = Vec::new();
-        let mut spine_refs: Vec<String> = Vec::new();
-
-        // Add chapters to manifest
-        for (i, entry) in spine.iter().enumerate() {
-            let source_path = book
-                .source_id(entry.id)
-                .unwrap_or("unknown.xhtml")
-                .to_string();
-            let filename = format!("chapter_{}.xhtml", i);
-            let id = format!("chapter_{}", i);
-
-            // Detect scripted/mathml/svg properties from content
-            let properties = if let Ok(data) = book.load_raw(entry.id) {
-                detect_xhtml_properties(&data)
-            } else {
-                None
-            };
-
-            manifest_items.push(ManifestItem {
-                id: id.clone(),
-                href: filename,
-                media_type: "application/xhtml+xml".to_string(),
-                properties,
-            });
-            spine_refs.push(id);
-
-            // Store original path for content writing
-            manifest_items.last_mut().unwrap().href =
-                format!("OEBPS/{}", sanitize_path(&source_path));
-        }
-
-        // Add assets to manifest
-        let assets: Vec<_> = book.list_assets().to_vec();
-        let mut asset_map: HashMap<String, String> = HashMap::new();
-
-        // Resolve cover image index using shared resolver
-        let cover_image_path = book.metadata().cover_image.as_deref();
-        let cover_idx = resolve_cover_asset(cover_image_path, &assets);
-
-        for (i, asset_path) in assets.iter().enumerate() {
-            let path_str = asset_path.to_string_lossy();
-            let media_type = guess_media_type(&path_str);
-            let id = format!("asset_{}", i);
-            let href = format!("OEBPS/{}", sanitize_path(&path_str));
-
-            let is_cover = cover_idx.is_some_and(|ci| ci == i);
-            let properties = if is_cover {
-                Some("cover-image".to_string())
-            } else {
-                None
-            };
-
-            manifest_items.push(ManifestItem {
-                id: id.clone(),
-                href: href.clone(),
-                media_type,
-                properties,
-            });
-            asset_map.insert(path_str.to_string(), href);
-        }
-
-        // 4. Write content.opf (generate after nav is added to manifest)
-        // Add nav document to manifest first
-        manifest_items.insert(
-            0,
-            ManifestItem {
-                id: "nav".to_string(),
-                href: "OEBPS/toc.xhtml".to_string(),
-                media_type: "application/xhtml+xml".to_string(),
-                properties: Some("nav".to_string()),
-            },
-        );
-
-        let opf = generate_opf(book.metadata(), &manifest_items, &spine_refs);
-        zip.start_file("OEBPS/content.opf", deflated)
-            .map_err(io_error)?;
-        zip.write_all(opf.as_bytes())?;
-
-        // 5. Write toc.ncx (EPUB2 fallback)
-        let ncx = generate_ncx(book.metadata(), book.toc());
-        zip.start_file("OEBPS/toc.ncx", deflated)
-            .map_err(io_error)?;
-        zip.write_all(ncx.as_bytes())?;
-
-        // 5b. Write toc.xhtml (EPUB3 nav document)
-        let nav_xhtml = generate_nav_xhtml(book.metadata(), book.toc());
-        zip.start_file("OEBPS/toc.xhtml", deflated)
-            .map_err(io_error)?;
-        zip.write_all(nav_xhtml.as_bytes())?;
-
-        // 6. Write chapters
-        for entry in &spine {
-            let source_path = book
-                .source_id(entry.id)
-                .unwrap_or("unknown.xhtml")
-                .to_string();
-            let mut content = book.load_raw(entry.id)?;
-            let zip_path = format!("OEBPS/{}", sanitize_path(&source_path));
-
-            // Strip MOBI-specific artifacts (filepos anchors, mbp:pagebreak)
-            // so they don't pollute EPUB output
-            let content_str = String::from_utf8_lossy(&content);
-            let cleaned = strip_mobi_artifacts(&content_str);
-            if cleaned.len() != content_str.len() {
-                content = cleaned.into_bytes();
-            }
-
-            zip.start_file(&zip_path, deflated).map_err(io_error)?;
-            zip.write_all(&content)?;
-        }
-
-        // 7. Write assets
-        for asset_path in &assets {
-            let content = book.load_asset(asset_path)?;
-            let zip_path = format!("OEBPS/{}", sanitize_path(&asset_path.to_string_lossy()));
-
-            zip.start_file(&zip_path, deflated).map_err(io_error)?;
-            zip.write_all(&content)?;
-        }
-
-        zip.finish().map_err(io_error)?;
-        Ok(())
-    }
-
-    /// Export with normalized content (IR pipeline produces clean, consistent output).
-    fn export_normalized<W: Write + Seek>(
-        &self,
-        book: &mut Book,
-        writer: &mut W,
-    ) -> io::Result<()> {
         use super::normalize::normalize_book;
 
-        // Normalize the book content
+        // Resolve links so TOC entries have their target field populated
+        book.resolve_links()?;
+
+        // Normalize the book content through IR pipeline
         let content = normalize_book(book)?;
 
         let mut zip = ZipWriter::new(writer);
@@ -283,27 +120,29 @@ impl EpubExporter {
             spine_refs.push(id);
         }
 
-        // Add assets to manifest (from normalized content)
-        let cover_image_path = book.metadata().cover_image.as_deref();
-        let assets_vec: Vec<_> = content.assets.iter().collect();
-        let cover_idx = resolve_cover_asset(cover_image_path, &assets_vec);
+        // Add cover image directly from CoverAsset (no scanning needed)
+        if let Some(cover) = book.cover() {
+            let ext = guess_extension(&cover.media_type);
+            let href = format!("OEBPS/cover.{}", ext);
+            manifest_items.push(ManifestItem {
+                id: "cover-image".to_string(),
+                href,
+                media_type: cover.media_type.clone(),
+                properties: Some("cover-image".to_string()),
+            });
+        }
+
+        // Add remaining assets to manifest (from normalized content)
         for (asset_idx, asset_path) in content.assets.iter().enumerate() {
             let media_type = guess_media_type(asset_path);
             let id = format!("asset_{}", asset_idx);
             let href = format!("OEBPS/{}", sanitize_path(asset_path));
 
-            let is_cover = cover_idx.is_some_and(|ci| ci == asset_idx);
-            let properties = if is_cover {
-                Some("cover-image".to_string())
-            } else {
-                None
-            };
-
             manifest_items.push(ManifestItem {
                 id,
                 href,
                 media_type,
-                properties,
+                properties: None,
             });
         }
 
@@ -324,13 +163,20 @@ impl EpubExporter {
         zip.write_all(opf.as_bytes())?;
 
         // 5. Write toc.ncx (EPUB2 fallback)
-        let ncx = generate_ncx(book.metadata(), book.toc());
+        // Build chapter_href_map for TOC resolution (maps ChapterId to chapter_N.xhtml)
+        let chapter_href_map: HashMap<_, _> = content
+            .chapters
+            .iter()
+            .enumerate()
+            .map(|(i, ch)| (ch.id, format!("chapter_{}.xhtml", i)))
+            .collect();
+        let ncx = generate_ncx(book.metadata(), book.toc(), &chapter_href_map);
         zip.start_file("OEBPS/toc.ncx", deflated)
             .map_err(io_error)?;
         zip.write_all(ncx.as_bytes())?;
 
         // 5b. Write toc.xhtml (EPUB3 nav document)
-        let nav_xhtml = generate_nav_xhtml(book.metadata(), book.toc());
+        let nav_xhtml = generate_nav_xhtml(book.metadata(), book.toc(), &chapter_href_map);
         zip.start_file("OEBPS/toc.xhtml", deflated)
             .map_err(io_error)?;
         zip.write_all(nav_xhtml.as_bytes())?;
@@ -349,7 +195,15 @@ impl EpubExporter {
             zip.write_all(chapter.document.as_bytes())?;
         }
 
-        // 8. Write assets referenced by normalized content
+        // 8. Write cover image directly from CoverAsset
+        if let Some(cover) = book.cover() {
+            let ext = guess_extension(&cover.media_type);
+            let zip_path = format!("OEBPS/cover.{}", ext);
+            zip.start_file(&zip_path, deflated).map_err(io_error)?;
+            zip.write_all(&cover.data)?;
+        }
+
+        // 9. Write other assets referenced by normalized content
         for asset_path in &content.assets {
             let zip_path = format!("OEBPS/{}", sanitize_path(asset_path));
 
@@ -621,7 +475,11 @@ fn generate_opf(
 }
 
 /// Generate toc.ncx from TOC entries.
-fn generate_ncx(metadata: &crate::model::Metadata, toc: &[TocEntry]) -> String {
+fn generate_ncx(
+    metadata: &crate::model::Metadata,
+    toc: &[TocEntry],
+    chapter_href_map: &HashMap<crate::import::ChapterId, String>,
+) -> String {
     let mut ncx = String::new();
 
     ncx.push_str(
@@ -650,14 +508,20 @@ fn generate_ncx(metadata: &crate::model::Metadata, toc: &[TocEntry]) -> String {
     );
 
     let mut play_order = 1;
-    write_nav_points(&mut ncx, toc, &mut play_order, 2);
+    write_nav_points(&mut ncx, toc, &mut play_order, 2, chapter_href_map);
 
     ncx.push_str("  </navMap>\n</ncx>\n");
     ncx
 }
 
 /// Recursively write navPoint elements.
-fn write_nav_points(ncx: &mut String, entries: &[TocEntry], play_order: &mut usize, indent: usize) {
+fn write_nav_points(
+    ncx: &mut String,
+    entries: &[TocEntry],
+    play_order: &mut usize,
+    indent: usize,
+    chapter_href_map: &HashMap<crate::import::ChapterId, String>,
+) {
     let indent_str = "  ".repeat(indent);
 
     for entry in entries {
@@ -673,13 +537,19 @@ fn write_nav_points(ncx: &mut String, entries: &[TocEntry], play_order: &mut usi
         ncx.push_str(&format!(
             "{}  <content src=\"{}\"/>\n",
             indent_str,
-            escape_xml(&entry.href)
+            escape_xml(&resolve_toc_href(entry, chapter_href_map))
         ));
 
         *play_order += 1;
 
         if !entry.children.is_empty() {
-            write_nav_points(ncx, &entry.children, play_order, indent + 1);
+            write_nav_points(
+                ncx,
+                &entry.children,
+                play_order,
+                indent + 1,
+                chapter_href_map,
+            );
         }
 
         ncx.push_str(&format!("{}</navPoint>\n", indent_str));
@@ -687,7 +557,11 @@ fn write_nav_points(ncx: &mut String, entries: &[TocEntry], play_order: &mut usi
 }
 
 /// Generate toc.xhtml (EPUB3 navigation document).
-fn generate_nav_xhtml(metadata: &crate::model::Metadata, toc: &[TocEntry]) -> String {
+fn generate_nav_xhtml(
+    metadata: &crate::model::Metadata,
+    toc: &[TocEntry],
+    chapter_href_map: &HashMap<crate::import::ChapterId, String>,
+) -> String {
     let mut nav = String::new();
 
     nav.push_str(
@@ -708,7 +582,7 @@ fn generate_nav_xhtml(metadata: &crate::model::Metadata, toc: &[TocEntry]) -> St
 "#,
     );
 
-    write_nav_items(&mut nav, toc, 3);
+    write_nav_items(&mut nav, toc, 3, chapter_href_map);
 
     nav.push_str(
         r#"    </ol>
@@ -721,14 +595,19 @@ fn generate_nav_xhtml(metadata: &crate::model::Metadata, toc: &[TocEntry]) -> St
 }
 
 /// Recursively write nav <li> items for EPUB3 nav document.
-fn write_nav_items(nav: &mut String, entries: &[TocEntry], indent: usize) {
+fn write_nav_items(
+    nav: &mut String,
+    entries: &[TocEntry],
+    indent: usize,
+    chapter_href_map: &HashMap<crate::import::ChapterId, String>,
+) {
     let indent_str = "  ".repeat(indent);
 
     for entry in entries {
         nav.push_str(&format!(
             "{}<li><a href=\"{}\">{}</a>",
             indent_str,
-            escape_xml(&entry.href),
+            escape_xml(&resolve_toc_href(entry, chapter_href_map)),
             escape_xml(&entry.title)
         ));
 
@@ -737,10 +616,39 @@ fn write_nav_items(nav: &mut String, entries: &[TocEntry], indent: usize) {
         } else {
             nav.push('\n');
             nav.push_str(&format!("{}  <ol>\n", indent_str));
-            write_nav_items(nav, &entry.children, indent + 2);
+            write_nav_items(nav, &entry.children, indent + 2, chapter_href_map);
             nav.push_str(&format!("{}  </ol>\n", indent_str));
             nav.push_str(&format!("{}</li>\n", indent_str));
         }
+    }
+}
+
+/// Resolve a TOC entry's href to the correct output file path.
+///
+/// If the entry has a resolved `target`, map it through `chapter_href_map`.
+/// Otherwise, fall back to the raw `href`.
+fn resolve_toc_href(
+    entry: &TocEntry,
+    chapter_href_map: &HashMap<crate::import::ChapterId, String>,
+) -> String {
+    match &entry.target {
+        Some(AnchorTarget::Internal(gid)) => {
+            if let Some(path) = chapter_href_map.get(&gid.chapter) {
+                // Preserve any fragment from the raw href
+                if let Some(hash_pos) = entry.href.find('#') {
+                    format!("{}{}", path, &entry.href[hash_pos..])
+                } else {
+                    path.clone()
+                }
+            } else {
+                entry.href.clone()
+            }
+        }
+        Some(AnchorTarget::Chapter(chapter_id)) => chapter_href_map
+            .get(chapter_id)
+            .cloned()
+            .unwrap_or_else(|| entry.href.clone()),
+        Some(AnchorTarget::External(_)) | None => entry.href.clone(),
     }
 }
 
@@ -811,6 +719,18 @@ fn guess_media_type(path: &str) -> String {
         "ncx" => "application/x-dtbncx+xml".to_string(),
         "opf" => "application/oebps-package+xml".to_string(),
         _ => "application/octet-stream".to_string(),
+    }
+}
+
+/// Guess file extension from media type.
+fn guess_extension(media_type: &str) -> &'static str {
+    match media_type {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/svg+xml" => "svg",
+        "image/webp" => "webp",
+        _ => "jpg",
     }
 }
 

@@ -19,7 +19,7 @@ use crate::mobi::writer_transform::{
 };
 use crate::model::{Book, Resource, TocEntry};
 
-use super::{Exporter, resolve_cover_asset};
+use super::Exporter;
 
 // Constants
 const RECORD_SIZE: usize = 4096;
@@ -28,15 +28,12 @@ const XOR_KEY_LEN: usize = 20;
 
 /// Configuration for AZW3 export.
 #[derive(Debug, Clone, Default)]
-pub struct Azw3Config {
-    /// If true, normalize content through IR pipeline for clean, consistent output.
-    /// Default is false (passthrough mode preserves original HTML/CSS).
-    pub normalize: bool,
-}
+pub struct Azw3Config {}
 
 /// AZW3/KF8 format exporter.
 ///
 /// Creates KF8 files compatible with modern Kindle devices.
+/// All content passes through the IR pipeline for consistent output.
 pub struct Azw3Exporter {
     config: Azw3Config,
 }
@@ -64,7 +61,9 @@ impl Default for Azw3Exporter {
 
 impl Exporter for Azw3Exporter {
     fn export<W: Write + Seek>(&self, book: &mut Book, writer: &mut W) -> io::Result<()> {
-        let builder = Kf8Builder::new(book, self.config.normalize)?;
+        // Resolve links so TOC entries have their target field populated
+        book.resolve_links()?;
+        let builder = Kf8Builder::new(book)?;
         builder.write(writer)
     }
 }
@@ -79,77 +78,17 @@ struct BookContext {
     toc: Vec<TocEntry>,
     /// Metadata
     metadata: crate::model::Metadata,
+    /// Cover image asset (loaded eagerly during import)
+    cover: Option<crate::model::CoverAsset>,
 }
 
 struct SpineItem {
     href: String,
-    data: Vec<u8>,
 }
 
 impl BookContext {
-    /// Collect all data from a Book into internal structures.
-    fn from_book(book: &mut Book, normalize: bool) -> io::Result<Self> {
-        if normalize {
-            Self::from_normalized(book)
-        } else {
-            Self::from_raw(book)
-        }
-    }
-
-    /// Collect raw (passthrough) content from the book.
-    fn from_raw(book: &mut Book) -> io::Result<Self> {
-        // Collect metadata and TOC (these are borrowed, so clone)
-        let metadata = book.metadata().clone();
-        let toc = book.toc().to_vec();
-
-        // Collect spine items
-        let spine_entries: Vec<_> = book.spine().to_vec();
-        let mut spine = Vec::with_capacity(spine_entries.len());
-
-        for entry in &spine_entries {
-            let href = book
-                .source_id(entry.id)
-                .unwrap_or("unknown.xhtml")
-                .to_string();
-            let data = book.load_raw(entry.id)?;
-            spine.push(SpineItem { href, data });
-        }
-
-        // Collect assets
-        let asset_paths: Vec<_> = book.list_assets().to_vec();
-        let mut resources = HashMap::new();
-
-        for path in asset_paths {
-            let path_str = path.to_string_lossy().to_string();
-            let data = book.load_asset(&path)?;
-            let media_type = guess_media_type(&path_str);
-
-            resources.insert(path_str, Resource { data, media_type });
-        }
-
-        // Also add spine items as resources (needed for internal lookups)
-        for item in &spine {
-            if !resources.contains_key(&item.href) {
-                resources.insert(
-                    item.href.clone(),
-                    Resource {
-                        data: item.data.clone(),
-                        media_type: "application/xhtml+xml".to_string(),
-                    },
-                );
-            }
-        }
-
-        Ok(Self {
-            resources,
-            spine,
-            toc,
-            metadata,
-        })
-    }
-
     /// Collect normalized content from the book through IR pipeline.
-    fn from_normalized(book: &mut Book) -> io::Result<Self> {
+    fn from_book(book: &mut Book) -> io::Result<Self> {
         use super::normalize::normalize_book;
 
         let normalized = normalize_book(book)?;
@@ -157,6 +96,7 @@ impl BookContext {
         // Collect metadata and TOC
         let metadata = book.metadata().clone();
         let toc = book.toc().to_vec();
+        let cover = book.cover().cloned();
 
         let mut resources = HashMap::new();
 
@@ -186,7 +126,7 @@ impl BookContext {
                 },
             );
 
-            spine.push(SpineItem { href, data });
+            spine.push(SpineItem { href });
         }
 
         // Add referenced assets
@@ -202,6 +142,7 @@ impl BookContext {
             spine,
             toc,
             metadata,
+            cover,
         })
     }
 }
@@ -233,8 +174,8 @@ struct Kf8Builder {
 }
 
 impl Kf8Builder {
-    fn new(book: &mut Book, normalize: bool) -> io::Result<Self> {
-        let ctx = BookContext::from_book(book, normalize)?;
+    fn new(book: &mut Book) -> io::Result<Self> {
+        let ctx = BookContext::from_book(book)?;
 
         let mut builder = Self {
             ctx,
@@ -267,6 +208,25 @@ impl Kf8Builder {
     }
 
     fn collect_resources(&mut self) -> io::Result<()> {
+        // Inject cover image as a dedicated resource (if present)
+        // This ensures the cover has a known index (always 0) without scanning
+        if let Some(ref cover) = self.ctx.cover {
+            let ext = match cover.media_type.as_str() {
+                "image/png" => "png",
+                "image/gif" => "gif",
+                "image/svg+xml" => "svg",
+                _ => "jpg",
+            };
+            let cover_href = format!("cover.{}", ext);
+            self.ctx.resources.insert(
+                cover_href.clone(),
+                Resource {
+                    data: cover.data.clone(),
+                    media_type: cover.media_type.clone(),
+                },
+            );
+        }
+
         // Collect images
         self.image_hrefs = self
             .ctx
@@ -820,10 +780,15 @@ impl Kf8Builder {
             records.push((109, rights.as_bytes().to_vec()));
         }
 
-        // Cover offset - resolve cover image index using shared resolver
-        if let Some(cover_idx) =
-            resolve_cover_asset(self.ctx.metadata.cover_image.as_deref(), &self.image_hrefs)
-        {
+        // Cover offset - cover is injected as first image in collect_resources()
+        if self.ctx.cover.is_some() && !self.image_hrefs.is_empty() {
+            // Cover is always at index 0 (injected by collect_resources)
+            // Find it by looking for the "cover.ext" pattern
+            let cover_idx = self
+                .image_hrefs
+                .iter()
+                .position(|href| href.starts_with("cover."))
+                .unwrap_or(0);
             records.push((201, (cover_idx as u32).to_be_bytes().to_vec()));
         }
 

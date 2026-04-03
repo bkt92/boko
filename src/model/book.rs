@@ -44,6 +44,21 @@ pub struct Resource {
     pub media_type: String,
 }
 
+/// Cover image asset loaded eagerly during import.
+///
+/// Each importer knows which asset is the cover at import time.
+/// The cover data is loaded once and stored here so exporters don't need
+/// fragile fuzzy path matching via `resolve_cover_asset()`.
+#[derive(Debug, Clone)]
+pub struct CoverAsset {
+    /// Source path (for reference/debugging, matches `metadata.cover_image`).
+    pub path: String,
+    /// Raw image bytes.
+    pub data: Vec<u8>,
+    /// Media type (e.g. "image/jpeg", "image/png").
+    pub media_type: String,
+}
+
 /// A contributor with optional role and sort name.
 #[derive(Debug, Clone, Default)]
 pub struct Contributor {
@@ -80,7 +95,7 @@ pub struct Metadata {
     /// **Contract**: If set, this MUST match an entry in `Importer::list_assets()`
     /// so that `Book::load_asset(Path::new(&cover_image))` succeeds.
     /// Importers must ensure this path matches one of their reported asset paths.
-    /// Exporters should use `resolve_cover_asset()` for robust matching.
+    /// The actual cover data is loaded eagerly into `Book::cover()` during import.
     pub cover_image: Option<String>,
     /// dcterms:modified timestamp
     pub modified_date: Option<String>,
@@ -197,6 +212,8 @@ pub struct Book {
     /// Cache of parsed IR chapters to avoid re-parsing during normalized export.
     /// Uses RwLock for thread-safe access and Arc for cheap cloning.
     ir_cache: Arc<RwLock<HashMap<ChapterId, Arc<Chapter>>>>,
+    /// Eagerly loaded cover image data (populated during import).
+    cover: Option<CoverAsset>,
 }
 
 impl Format {
@@ -244,16 +261,18 @@ impl Book {
 
     /// Open an ebook file with an explicit format.
     pub fn open_format(path: impl AsRef<Path>, format: Format) -> io::Result<Self> {
-        let backend: Box<dyn Importer> = match format {
+        let mut backend: Box<dyn Importer> = match format {
             Format::Epub => Box::new(EpubImporter::open(path.as_ref())?),
             Format::Azw3 => Box::new(Azw3Importer::open(path.as_ref())?),
             Format::Mobi => Box::new(MobiImporter::open(path.as_ref())?),
             Format::Kfx => Box::new(KfxImporter::open(path.as_ref())?),
             Format::Markdown => Box::new(MarkdownImporter::open(path.as_ref())?),
         };
+        let cover = Self::load_cover_asset(&mut *backend);
         Ok(Self {
             backend,
             ir_cache: Arc::new(RwLock::new(HashMap::new())),
+            cover,
         })
     }
 
@@ -262,16 +281,30 @@ impl Book {
     /// This is useful for reading from stdin or other non-file sources.
     pub fn from_bytes(data: &[u8], format: Format) -> io::Result<Self> {
         let source = Arc::new(MemorySource::new(data.to_vec()));
-        let backend: Box<dyn Importer> = match format {
+        let mut backend: Box<dyn Importer> = match format {
             Format::Epub => Box::new(EpubImporter::from_source(source)?),
             Format::Azw3 => Box::new(Azw3Importer::from_source(source)?),
             Format::Mobi => Box::new(MobiImporter::from_source(source)?),
             Format::Kfx => Box::new(KfxImporter::from_source(source)?),
             Format::Markdown => Box::new(MarkdownImporter::from_source(source)?),
         };
+        let cover = Self::load_cover_asset(&mut *backend);
         Ok(Self {
             backend,
             ir_cache: Arc::new(RwLock::new(HashMap::new())),
+            cover,
+        })
+    }
+
+    /// Eagerly load cover image data from the backend.
+    fn load_cover_asset(backend: &mut dyn Importer) -> Option<CoverAsset> {
+        let path = backend.metadata().cover_image.clone()?;
+        let data = backend.load_asset(Path::new(&path)).ok()?;
+        let media_type = guess_media_type_from_path(&path);
+        Some(CoverAsset {
+            path,
+            data,
+            media_type,
         })
     }
 
@@ -389,6 +422,13 @@ impl Book {
         if let Ok(mut cache) = self.ir_cache.write() {
             cache.clear();
         }
+    }
+
+    /// Get the eagerly loaded cover image asset.
+    ///
+    /// Returns `None` if the book has no cover or the cover data could not be loaded.
+    pub fn cover(&self) -> Option<&CoverAsset> {
+        self.cover.as_ref()
     }
 
     /// Resolve all internal links in the book.
@@ -561,5 +601,23 @@ impl TocEntry {
             play_order: None,
             target: None,
         }
+    }
+}
+
+/// Guess media type from file path extension.
+fn guess_media_type_from_path(path: &str) -> String {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg".to_string(),
+        "png" => "image/png".to_string(),
+        "gif" => "image/gif".to_string(),
+        "svg" => "image/svg+xml".to_string(),
+        "webp" => "image/webp".to_string(),
+        _ => "image/jpeg".to_string(), // safe default
     }
 }

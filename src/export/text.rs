@@ -87,24 +87,28 @@ impl MarkdownExporter {
         }
 
         // Compute cover relative path for front matter
+        // Write cover image directly from CoverAsset (no fuzzy matching)
         let metadata = book.metadata();
         let img_dir_name = img_dir
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("images");
-        let cover_relative = metadata.cover_image.as_ref().and_then(|cover| {
-            let cover_norm = cover.replace('\\', "/");
-            if let Some(new_name) = img_map.get(&cover_norm) {
-                Some(format!("{}/{}", img_dir_name, new_name))
-            } else if let Some(fname) = Path::new(cover).file_name().and_then(|f| f.to_str()) {
-                for (old_path, new_name) in &img_map {
-                    if old_path.ends_with(fname) {
-                        return Some(format!("{}/{}", img_dir_name, new_name));
-                    }
-                }
-                None
-            } else {
-                None
+        let cover_relative = book.cover().and_then(|cover| {
+            let ext = match cover.media_type.as_str() {
+                "image/png" => "png",
+                "image/gif" => "gif",
+                "image/svg+xml" => "svg",
+                _ => "jpg",
+            };
+            let cover_filename = format!("cover.{}", ext);
+            // Write cover image to the image directory
+            if !image_assets.is_empty() || book.cover().is_some() {
+                let _ = std::fs::create_dir_all(&img_dir);
+            }
+            let cover_path = img_dir.join(&cover_filename);
+            match std::fs::write(&cover_path, &cover.data) {
+                Ok(()) => Some(format!("{}/{}", img_dir_name, cover_filename)),
+                Err(_) => None,
             }
         });
 
@@ -183,7 +187,16 @@ impl Exporter for MarkdownExporter {
 
         // Generate YAML front matter from metadata
         let metadata = book.metadata();
-        let fm = metadata_to_front_matter(metadata, metadata.cover_image.as_deref());
+        let cover_path = book.cover().map(|c| {
+            let ext = match c.media_type.as_str() {
+                "image/png" => "png",
+                "image/gif" => "gif",
+                "image/svg+xml" => "svg",
+                _ => "jpg",
+            };
+            format!("cover.{}", ext)
+        });
+        let fm = metadata_to_front_matter(metadata, cover_path.as_deref());
         if let Some(yaml_header) = serialize_front_matter(&fm) {
             write!(writer, "{}", yaml_header)?;
         }

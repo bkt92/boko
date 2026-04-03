@@ -89,9 +89,9 @@ fn build_kfx_container(book: &mut Book) -> io::Result<Vec<u8>> {
     // ========================================================================
 
     // Check if we need a standalone cover section
-    // This happens when the EPUB cover image differs from the first spine chapter's image
+    // This happens when the cover image differs from the first spine chapter's image
     let asset_paths: Vec<_> = book.list_assets().to_vec();
-    let cover_image = book.metadata().cover_image.clone();
+    let cover_image = book.cover().map(|c| c.path.clone());
     let first_chapter_id = book.spine().first().map(|e| e.id);
 
     let standalone_cover_path: Option<String> = match (cover_image, first_chapter_id) {
@@ -598,9 +598,9 @@ fn build_book_metadata_fragment(
     let meta = book.metadata();
 
     // Build metadata context with transformed values
-    // Cover path in metadata may not match the registered resource path exactly.
-    // Try common path variations (with/without epub/ prefix, etc.)
-    let cover_resource_name = meta.cover_image.as_ref().and_then(|path| {
+    // Use CoverAsset path (preferred) or fall back to metadata.cover_image
+    let cover_path = book.cover().map(|c| c.path.as_str());
+    let cover_resource_name = cover_path.or(meta.cover_image.as_deref()).and_then(|path| {
         // Try exact path first
         if let Some(name) = ctx.resource_registry.get_name(path) {
             return Some(name);
