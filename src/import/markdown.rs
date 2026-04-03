@@ -5,8 +5,8 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::import::{ChapterId, Importer, SpineEntry};
 use crate::import::front_matter::{extract_front_matter, front_matter_to_metadata};
+use crate::import::{ChapterId, Importer, SpineEntry};
 use crate::io::ByteSource;
 use crate::model::{
     AnchorTarget, Chapter, GlobalNodeId, Landmark, Metadata, Node, NodeId, Role, TocEntry,

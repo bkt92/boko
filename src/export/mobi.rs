@@ -248,11 +248,7 @@ fn bvwi(mut val: u32) -> Vec<u8> {
 /// enabling "current chapter" display. The format is:
 /// - Backward-encoded size prefix
 /// - For each spanning entry: backward-encoded (offset, length) pairs
-fn build_tbs(
-    record_start: u32,
-    record_end: u32,
-    toc_entries: &[NcxBuildEntry],
-) -> Vec<u8> {
+fn build_tbs(record_start: u32, record_end: u32, toc_entries: &[NcxBuildEntry]) -> Vec<u8> {
     // Find entries that overlap with this record
     let spanning: Vec<(u32, u32)> = toc_entries
         .iter()
@@ -452,16 +448,15 @@ impl MobiExporter {
     /// MOBI 6 does not use KF8 INDX/CNCX records. Instead, navigation is done
     /// via an HTML page with `<a filepos="NNNNN">` links embedded in the text.
     /// The TOC page is placed at the beginning of the book content.
-    fn build_html_toc(
-        &self,
-        toc: &[TocEntry],
-        chapter_positions: &HashMap<String, u32>,
-    ) -> String {
+    fn build_html_toc(&self, toc: &[TocEntry], chapter_positions: &HashMap<String, u32>) -> String {
         if toc.is_empty() {
             return String::new();
         }
 
-        fn resolve_toc_position(entry: &TocEntry, chapter_positions: &HashMap<String, u32>) -> Option<u32> {
+        fn resolve_toc_position(
+            entry: &TocEntry,
+            chapter_positions: &HashMap<String, u32>,
+        ) -> Option<u32> {
             if let Some(ref target) = entry.target {
                 match target {
                     AnchorTarget::Chapter(chapter_id) => {
@@ -493,7 +488,11 @@ impl MobiExporter {
                     indent, pos, entry.title
                 ));
                 if !entry.children.is_empty() {
-                    html.push_str(&build_entries(&entry.children, chapter_positions, depth + 1));
+                    html.push_str(&build_entries(
+                        &entry.children,
+                        chapter_positions,
+                        depth + 1,
+                    ));
                 }
             }
             html
@@ -773,10 +772,8 @@ impl MobiBuilder {
         let image_paths: Vec<_> = book.list_assets().to_vec();
 
         // Resolve cover image index using shared resolver
-        let cover_image_idx = resolve_cover_asset(
-            self.metadata.cover_image.as_deref(),
-            &image_paths,
-        );
+        let cover_image_idx =
+            resolve_cover_asset(self.metadata.cover_image.as_deref(), &image_paths);
 
         let mut image_iter_idx = 0usize;
         for image_path in image_paths {
@@ -876,11 +873,7 @@ impl MobiBuilder {
 
             // Append TBS (Trailing Byte Sequence) for chapter context
             if !self.ncx_entries.is_empty() {
-                let tbs = build_tbs(
-                    offset as u32,
-                    end as u32,
-                    &self.ncx_entries,
-                );
+                let tbs = build_tbs(offset as u32, end as u32, &self.ncx_entries);
                 compressed.extend_from_slice(&tbs);
             }
 
@@ -1164,7 +1157,10 @@ impl MobiBuilder {
             return None;
         }
 
-        eprintln!("MOBI TOC: {} entries with positions", self.ncx_entries.len());
+        eprintln!(
+            "MOBI TOC: {} entries with positions",
+            self.ncx_entries.len()
+        );
         Some(build_ncx_indx(&self.ncx_entries))
     }
 
@@ -1186,8 +1182,8 @@ impl MobiBuilder {
         let eof_marker = self.build_eof_marker();
 
         // Record layout: Record 0 + text records + INDX/CNCX + image records + EOF
-        let num_records = 1 + self.text_records.len() + index_record_count
-            + self.image_records.len() + 1;
+        let num_records =
+            1 + self.text_records.len() + index_record_count + self.image_records.len() + 1;
 
         let pdb_header = self.build_palmdb_header(num_records as u16);
         let record0 = self.build_record0(self.text_length, index_record_count);

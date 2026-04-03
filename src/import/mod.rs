@@ -13,7 +13,10 @@ mod mobi;
 
 pub use azw3::Azw3Importer;
 pub use epub::EpubImporter;
-pub use front_matter::{FrontMatter, extract_front_matter, front_matter_to_metadata, metadata_to_front_matter, serialize_front_matter};
+pub use front_matter::{
+    FrontMatter, extract_front_matter, front_matter_to_metadata, metadata_to_front_matter,
+    serialize_front_matter,
+};
 pub use kfx::KfxImporter;
 pub use markdown::MarkdownImporter;
 pub use mobi::MobiImporter;

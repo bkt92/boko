@@ -65,9 +65,17 @@ pub struct FrontMatter {
     pub modified: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub contributors: Vec<FrontMatterContributor>,
-    #[serde(skip_serializing_if = "Option::is_none", default, rename = "title-sort")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        rename = "title-sort"
+    )]
     pub title_sort: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default, rename = "author-sort")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        rename = "author-sort"
+    )]
     pub author_sort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub collection: Option<FrontMatterCollection>,
@@ -374,23 +382,35 @@ Content here.
         assert_eq!(roundtrip.rights, original.rights);
         // Cover path should be resolved to absolute path
         assert!(roundtrip.cover_image.is_some());
-        assert!(roundtrip
-            .cover_image
-            .unwrap()
-            .ends_with("cover.jpg"));
+        assert!(roundtrip.cover_image.unwrap().ends_with("cover.jpg"));
         assert_eq!(roundtrip.modified_date, original.modified_date);
         assert_eq!(roundtrip.contributors.len(), original.contributors.len());
-        assert_eq!(roundtrip.contributors[0].name, original.contributors[0].name);
+        assert_eq!(
+            roundtrip.contributors[0].name,
+            original.contributors[0].name
+        );
         assert_eq!(
             roundtrip.contributors[0].file_as,
             original.contributors[0].file_as
         );
-        assert_eq!(roundtrip.contributors[0].role, original.contributors[0].role);
+        assert_eq!(
+            roundtrip.contributors[0].role,
+            original.contributors[0].role
+        );
         assert_eq!(roundtrip.title_sort, original.title_sort);
         assert_eq!(roundtrip.author_sort, original.author_sort);
-        assert_eq!(roundtrip.collection.as_ref().map(|c| &c.name), original.collection.as_ref().map(|c| &c.name));
-        assert_eq!(roundtrip.collection.as_ref().map(|c| &c.collection_type), original.collection.as_ref().map(|c| &c.collection_type));
-        assert_eq!(roundtrip.collection.as_ref().map(|c| &c.position), original.collection.as_ref().map(|c| &c.position));
+        assert_eq!(
+            roundtrip.collection.as_ref().map(|c| &c.name),
+            original.collection.as_ref().map(|c| &c.name)
+        );
+        assert_eq!(
+            roundtrip.collection.as_ref().map(|c| &c.collection_type),
+            original.collection.as_ref().map(|c| &c.collection_type)
+        );
+        assert_eq!(
+            roundtrip.collection.as_ref().map(|c| &c.position),
+            original.collection.as_ref().map(|c| &c.position)
+        );
     }
 
     #[test]

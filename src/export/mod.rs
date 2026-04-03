@@ -76,7 +76,10 @@ pub trait Exporter {
 /// 3. Filename-only match as last resort
 ///
 /// Returns the index into `asset_paths` that matches the cover, or `None`.
-pub fn resolve_cover_asset(cover_image: Option<&str>, asset_paths: &[impl AsRef<Path>]) -> Option<usize> {
+pub fn resolve_cover_asset(
+    cover_image: Option<&str>,
+    asset_paths: &[impl AsRef<Path>],
+) -> Option<usize> {
     let cover = cover_image?;
     let cover_norm = cover.replace('\\', "/").to_lowercase();
     let cover_filename = Path::new(cover)

@@ -105,7 +105,10 @@ impl EpubExporter {
 
         // Add chapters to manifest
         for (i, entry) in spine.iter().enumerate() {
-            let source_path = book.source_id(entry.id).unwrap_or("unknown.xhtml").to_string();
+            let source_path = book
+                .source_id(entry.id)
+                .unwrap_or("unknown.xhtml")
+                .to_string();
             let filename = format!("chapter_{}.xhtml", i);
             let id = format!("chapter_{}", i);
 
@@ -161,12 +164,15 @@ impl EpubExporter {
 
         // 4. Write content.opf (generate after nav is added to manifest)
         // Add nav document to manifest first
-        manifest_items.insert(0, ManifestItem {
-            id: "nav".to_string(),
-            href: "OEBPS/toc.xhtml".to_string(),
-            media_type: "application/xhtml+xml".to_string(),
-            properties: Some("nav".to_string()),
-        });
+        manifest_items.insert(
+            0,
+            ManifestItem {
+                id: "nav".to_string(),
+                href: "OEBPS/toc.xhtml".to_string(),
+                media_type: "application/xhtml+xml".to_string(),
+                properties: Some("nav".to_string()),
+            },
+        );
 
         let opf = generate_opf(book.metadata(), &manifest_items, &spine_refs);
         zip.start_file("OEBPS/content.opf", deflated)
@@ -302,12 +308,15 @@ impl EpubExporter {
         }
 
         // 4. Write content.opf (generate after nav is added to manifest)
-        manifest_items.insert(0, ManifestItem {
-            id: "nav".to_string(),
-            href: "OEBPS/toc.xhtml".to_string(),
-            media_type: "application/xhtml+xml".to_string(),
-            properties: Some("nav".to_string()),
-        });
+        manifest_items.insert(
+            0,
+            ManifestItem {
+                id: "nav".to_string(),
+                href: "OEBPS/toc.xhtml".to_string(),
+                media_type: "application/xhtml+xml".to_string(),
+                properties: Some("nav".to_string()),
+            },
+        );
 
         let opf = generate_opf(book.metadata(), &manifest_items, &spine_refs);
         zip.start_file("OEBPS/content.opf", deflated)

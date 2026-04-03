@@ -821,10 +821,9 @@ impl Kf8Builder {
         }
 
         // Cover offset - resolve cover image index using shared resolver
-        if let Some(cover_idx) = resolve_cover_asset(
-            self.ctx.metadata.cover_image.as_deref(),
-            &self.image_hrefs,
-        ) {
+        if let Some(cover_idx) =
+            resolve_cover_asset(self.ctx.metadata.cover_image.as_deref(), &self.image_hrefs)
+        {
             records.push((201, (cover_idx as u32).to_be_bytes().to_vec()));
         }
 
