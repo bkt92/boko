@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:serde", "dep:serde_json"]
+cli = ["dep:clap", "dep:serde_json"]
 wasm = ["wasm-bindgen", "console_error_panic_hook"]
 
 [dependencies]
@@ -58,10 +58,10 @@ sha1_smol = { version = "1.0", features = ["std"] }
 
 # CLI argument parsing (only for binary)
 clap = { version = "4", features = ["derive"], optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
-# For Phase 2: YAML front matter parsing (optional feature)
-serde_yaml = { version = "0.9", optional = true }
+# YAML front matter parsing for Markdown import/export
+serde_yaml = { version = "0.9" }
 xml5ever = "0.39.0"
 
 # Native: use fast zlib-rs
