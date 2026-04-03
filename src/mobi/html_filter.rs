@@ -53,10 +53,13 @@ pub fn filter_html_for_mobi6(
 /// Removes tags and attributes that are MOBI/Kindle-internal and have no meaning
 /// in EPUB or other formats:
 /// - `<mbp:pagebreak/>` — MOBI page break markers
-/// - `<a id="fileposNNNNN" />` — MOBI byte-position anchors
+/// - `<a id="fileposNNNNN" />` — MOBI byte-position anchors (kept for TOC compatibility)
 /// - `aid="..."` attributes — Amazon anchor IDs
 /// - `data-Amzn*` / `data-amzn*` attributes — Amazon tracking attributes
 /// - `recindex="NNNNN"` attributes on img tags (should already be converted to src)
+///
+/// Note: filepos anchors are NOT stripped because they are used for TOC navigation.
+/// These anchors are valid HTML and work in EPUB readers.
 pub fn strip_mobi_artifacts(html: &str) -> String {
     // Phase 1: Strip Kindle/Amazon-specific attributes (aid, data-Amzn*)
     // Uses the existing high-performance byte-level stripper from transform.rs
@@ -67,31 +70,8 @@ pub fn strip_mobi_artifacts(html: &str) -> String {
     result = result.replace("<mbp:pagebreak/>", "");
     result = result.replace("<mbp:pagebreak>", "");
 
-    // Phase 3: Remove <a id="fileposNNNNN" /> anchors (MOBI byte-position markers)
-    let mut cleaned = String::with_capacity(result.len());
-    let mut search_from = 0;
-    while let Some(pos) = result[search_from..].find("<a id=\"filepos") {
-        let abs_pos = search_from + pos;
-        cleaned.push_str(&result[search_from..abs_pos]);
-
-        let remaining = &result[abs_pos..];
-        if let Some(end) = remaining.find('>') {
-            let tag_content = &remaining[..=end];
-            if tag_content.contains("filepos") && tag_content.starts_with("<a ") {
-                search_from = abs_pos + end + 1;
-                if !tag_content.contains("/>")
-                    && let Some(close) = result[search_from..].find("</a>")
-                {
-                    search_from += close + 4;
-                }
-                continue;
-            }
-        }
-        cleaned.push_str(&result[abs_pos..abs_pos + 3]);
-        search_from = abs_pos + 3;
-    }
-    cleaned.push_str(&result[search_from..]);
-    result = cleaned;
+    // Phase 3: Keep filepos anchors for TOC compatibility
+    // These anchors are valid HTML and are referenced by the TOC
 
     result
 }
@@ -129,17 +109,17 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_filepos_anchors_self_closing() {
+    fn test_preserves_filepos_anchors() {
         let html = r#"<p>Text</p><a id="filepos12345" /><p>More</p>"#;
         let result = strip_mobi_artifacts(html);
-        assert_eq!(result, "<p>Text</p><p>More</p>");
+        assert!(result.contains(r#"<a id="filepos12345" />"#), "filepos anchors should be preserved for TOC");
     }
 
     #[test]
-    fn test_strip_filepos_anchors_with_close_tag() {
+    fn test_preserves_filepos_anchors_with_close_tag() {
         let html = r#"<p>Text</p><a id="filepos0000100"></a><p>More</p>"#;
         let result = strip_mobi_artifacts(html);
-        assert_eq!(result, "<p>Text</p><p>More</p>");
+        assert!(result.contains(r#"id="filepos0000100""#), "filepos anchors should be preserved");
     }
 
     #[test]
@@ -148,14 +128,15 @@ mod tests {
         let result = strip_mobi_artifacts(html);
         assert!(result.contains(r#"<a id="chapter1" />"#));
         assert!(result.contains(r##"<a href="#chapter1">Link</a>"##));
-        assert!(!result.contains("filepos"));
     }
 
     #[test]
-    fn test_strip_all_artifacts() {
+    fn test_strip_all_artifacts_except_filepos() {
         let html = r#"<a id="filepos0" /><mbp:pagebreak/><p>Hello</p><mbp:pagebreak/><a id="filepos500" /><p>World</p>"#;
         let result = strip_mobi_artifacts(html);
-        assert_eq!(result, "<p>Hello</p><p>World</p>");
+        assert!(!result.contains("mbp:"), "mbp tags should be removed");
+        assert!(result.contains(r#"id="filepos0""#), "filepos anchors should be preserved");
+        assert!(result.contains(r#"id="filepos500""#), "filepos anchors should be preserved");
     }
 
     #[test]
@@ -201,7 +182,7 @@ mod tests {
     fn test_combined_mobi_artifacts() {
         let html = r#"<a id="filepos100" /><mbp:pagebreak/><p aid="0050">Chapter</p><img src="cover.jpg" data-AmznPageBreak="true"/>"#;
         let result = strip_mobi_artifacts(html);
-        assert!(!result.contains("filepos"), "filepos anchors removed");
+        assert!(result.contains("filepos"), "filepos anchors preserved for TOC");
         assert!(!result.contains("mbp:"), "mbp tags removed");
         assert!(!result.contains("aid="), "aid attributes removed");
         assert!(!result.contains("data-Amzn"), "data-Amzn removed");
