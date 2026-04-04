@@ -517,6 +517,74 @@ impl MobiExporter {
         toc_html
     }
 
+    /// Replace sentinel anchors with filepos anchors and return corrected positions.
+    ///
+    /// After all HTML transformations are done, scan for `<a id="__ch{N}_anchor" />`
+    /// sentinels, record their actual byte positions, replace with `<a id="filepos{N}" />`,
+    /// and build a corrected chapter_positions map.
+    fn fixup_anchor_positions(
+        &self,
+        html: &str,
+        original_positions: &HashMap<String, u32>,
+    ) -> (String, HashMap<String, u32>) {
+        let mut result = html.to_string();
+        let mut anchor_map: HashMap<u32, u32> = HashMap::new();
+
+        // Find all sentinel anchors and their actual positions
+        let sentinel_pattern = "<a id=\"__ch";
+        let mut search_from = 0;
+
+        while let Some(idx) = result[search_from..].find(sentinel_pattern) {
+            let abs_idx = search_from + idx;
+            let after_prefix = abs_idx + sentinel_pattern.len();
+            if let Some(end_offset) = result[after_prefix..].find("_anchor\" />") {
+                let chapter_idx_str = &result[after_prefix..after_prefix + end_offset];
+                if let Ok(chapter_idx) = chapter_idx_str.parse::<u32>() {
+                    anchor_map.insert(chapter_idx, abs_idx as u32);
+                }
+            }
+            search_from = abs_idx + 1;
+        }
+
+        // Replace sentinels with filepos anchors
+        for (&chapter_idx, &actual_pos) in &anchor_map {
+            let sentinel = format!("<a id=\"__ch{}_anchor\" />", chapter_idx);
+            let replacement = format!("<a id=\"filepos{}\" />", actual_pos);
+            result = result.replace(&sentinel, &replacement);
+        }
+
+        // Build corrected position map from original using anchor_map
+        let mut corrected_positions = HashMap::new();
+
+        // Map original position → chapter index (from ChapterId keys)
+        let orig_to_chapter: HashMap<u32, u32> = original_positions
+            .iter()
+            .filter(|(k, _)| k.starts_with("ChapterId("))
+            .filter_map(|(k, &orig_pos)| {
+                k.strip_prefix("ChapterId(")
+                    .and_then(|s| s.strip_suffix(')'))
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .map(|idx| (orig_pos, idx))
+            })
+            .collect();
+
+        for (key, &orig_pos) in original_positions {
+            if let Some(&chapter_idx) = orig_to_chapter.get(&orig_pos) {
+                if let Some(&actual_pos) = anchor_map.get(&chapter_idx) {
+                    corrected_positions.insert(key.clone(), actual_pos);
+                }
+            }
+        }
+
+        // Ensure all ChapterId keys are present
+        for (&chapter_idx, &actual_pos) in &anchor_map {
+            let key = format!("ChapterId({})", chapter_idx);
+            corrected_positions.insert(key, actual_pos);
+        }
+
+        (result, corrected_positions)
+    }
+
     fn collect_html_content(&self, book: &mut Book) -> io::Result<(String, HashMap<String, u32>)> {
         use crate::export::html_synth::synthesize_html;
         use crate::style::StyleId;
