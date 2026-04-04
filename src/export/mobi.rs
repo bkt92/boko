@@ -7,9 +7,12 @@ use std::io::{self, Seek, Write};
 use std::path::Path;
 
 use crate::mobi::index::{NcxBuildEntry, build_ncx_indx};
-use crate::model::{AnchorTarget, Book, Metadata, TocEntry};
+use crate::model::{AnchorTarget, Book, Metadata, NodeId, TocEntry};
 
 use super::Exporter;
+
+/// Map from (chapter_index, node_index) to element ID string.
+type NodeElementIds = HashMap<(u32, u32), String>;
 
 /// Find a safe UTF-8 boundary near `max_len` bytes from the start.
 ///
@@ -70,6 +73,7 @@ fn flatten_toc_for_mobi(
     entries: &[TocEntry],
     html_content: &str,
     chapter_positions: &HashMap<String, u32>,
+    node_element_ids: &NodeElementIds,
     text_length: u32,
 ) -> Vec<NcxBuildEntry> {
     struct TempEntry {
@@ -87,17 +91,26 @@ fn flatten_toc_for_mobi(
         entry: &TocEntry,
         html_content: &str,
         chapter_positions: &HashMap<String, u32>,
+        node_element_ids: &NodeElementIds,
     ) -> u32 {
         if let Some(ref target) = entry.target {
             match target {
-                AnchorTarget::Chapter(chapter_id) => {
-                    let key = format!("ChapterId({})", chapter_id.0);
-                    if let Some(&pos) = chapter_positions.get(&key) {
+                AnchorTarget::Internal(node_id) => {
+                    // Try to find the exact element position by ID
+                    let key = (node_id.chapter.0, node_id.node.0);
+                    if let Some(elem_id) = node_element_ids.get(&key)
+                        && let Some(pos) = find_element_position(html_content, elem_id)
+                    {
+                        return pos;
+                    }
+                    // Fall back to chapter start position
+                    let chapter_key = format!("ChapterId({})", node_id.chapter.0);
+                    if let Some(&pos) = chapter_positions.get(&chapter_key) {
                         return pos;
                     }
                 }
-                AnchorTarget::Internal(node_id) => {
-                    let key = format!("ChapterId({})", node_id.chapter.0);
+                AnchorTarget::Chapter(chapter_id) => {
+                    let key = format!("ChapterId({})", chapter_id.0);
                     if let Some(&pos) = chapter_positions.get(&key) {
                         return pos;
                     }
@@ -106,6 +119,7 @@ fn flatten_toc_for_mobi(
             }
         }
 
+        // Fallback: try href fragment
         let fragment = if let Some(hash_pos) = entry.href.find('#') {
             &entry.href[hash_pos + 1..]
         } else {
@@ -136,11 +150,12 @@ fn flatten_toc_for_mobi(
         parent_idx: i32,
         html_content: &str,
         chapter_positions: &HashMap<String, u32>,
+        node_element_ids: &NodeElementIds,
         result: &mut Vec<TempEntry>,
     ) {
         for entry in entries {
             let current_idx = result.len();
-            let pos = resolve_position(entry, html_content, chapter_positions);
+            let pos = resolve_position(entry, html_content, chapter_positions, node_element_ids);
 
             result.push(TempEntry {
                 pos,
@@ -161,12 +176,13 @@ fn flatten_toc_for_mobi(
                 current_idx as i32,
                 html_content,
                 chapter_positions,
+                node_element_ids,
                 result,
             );
         }
     }
 
-    flatten_recursive(entries, 0, -1, html_content, chapter_positions, &mut result);
+    flatten_recursive(entries, 0, -1, html_content, chapter_positions, node_element_ids, &mut result);
 
     // Sort by position, then calculate lengths
     let mut indexed: Vec<(usize, u32)> =
@@ -585,12 +601,16 @@ impl MobiExporter {
         (result, corrected_positions)
     }
 
-    fn collect_html_content(&self, book: &mut Book) -> io::Result<(String, HashMap<String, u32>)> {
+    fn collect_html_content(
+        &self,
+        book: &mut Book,
+    ) -> io::Result<(String, HashMap<String, u32>, NodeElementIds)> {
         use crate::export::html_synth::synthesize_html;
         use crate::style::StyleId;
 
         let mut html = String::new();
         let mut chapter_positions = HashMap::new();
+        let mut node_element_ids = NodeElementIds::new();
 
         // Get spine (reading order)
         let spine_entries: Vec<_> = book.spine().to_vec();
@@ -604,6 +624,17 @@ impl MobiExporter {
                     continue;
                 }
             };
+
+            // Build node→element_id mapping for this chapter
+            for node_idx in 0..chapter.node_count() {
+                let nid = NodeId(node_idx as u32);
+                if let Some(elem_id) = chapter.semantics.id(nid)
+                    && !elem_id.is_empty()
+                {
+                    node_element_ids
+                        .insert((entry.id.0, node_idx as u32), elem_id.to_string());
+                }
+            }
 
             // Synthesize HTML body from IR (no CSS classes for MOBI 6)
             let style_map: HashMap<StyleId, String> = HashMap::new();
@@ -646,7 +677,7 @@ impl MobiExporter {
             html.push_str(&result.body);
         }
 
-        Ok((html, chapter_positions))
+        Ok((html, chapter_positions, node_element_ids))
     }
 
     /// Resolve internal links (href) to MOBI filepos references.
@@ -1370,7 +1401,8 @@ impl Exporter for MobiExporter {
         builder.process_images(book)?;
 
         // === PHASE 1: Collect HTML with sentinel anchors ===
-        let (html_content, sentinel_positions) = self.collect_html_content(book)?;
+        let (html_content, sentinel_positions, node_element_ids) =
+            self.collect_html_content(book)?;
 
         // === PHASE 2: All HTML transformations (these change string length) ===
 
@@ -1420,6 +1452,7 @@ impl Exporter for MobiExporter {
                 &builder.toc,
                 &html_content,
                 &builder.chapter_positions,
+                &node_element_ids,
                 html_content.len() as u32,
             );
         }
