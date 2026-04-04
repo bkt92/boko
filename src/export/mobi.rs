@@ -550,7 +550,7 @@ impl MobiExporter {
             let position = html.len() as u32;
 
             // Insert anchor tag at chapter start for TOC linking
-            let anchor = format!("<a id=\"filepos{}\" />", position);
+            let anchor = format!("<a id=\"__ch{}_anchor\" />", entry.id.0);
             html.push_str(&anchor);
 
             // Store position keyed by ChapterId (for TOC resolution)
