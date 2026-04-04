@@ -180,7 +180,14 @@ impl MobiHeader {
             (NULL_INDEX, 0)
         };
 
-        let ncx_index = if data.len() >= 0xF8 {
+        // NCX index location differs by MOBI version:
+        // - MOBI 6: extra record index [2] at offset 0x30
+        // - KF8 (MOBI 8): dedicated field at offset 0xF4
+        let ncx_index = if mobi_version < 8 && data.len() >= 0x34 {
+            // MOBI 6: use extra record index [2]
+            u32::from_be_bytes([data[0x30], data[0x31], data[0x32], data[0x33]])
+        } else if data.len() >= 0xF8 {
+            // KF8: use dedicated NCX field
             u32::from_be_bytes([data[0xF4], data[0xF5], data[0xF6], data[0xF7]])
         } else {
             NULL_INDEX
