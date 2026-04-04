@@ -569,10 +569,10 @@ impl MobiExporter {
             .collect();
 
         for (key, &orig_pos) in original_positions {
-            if let Some(&chapter_idx) = orig_to_chapter.get(&orig_pos) {
-                if let Some(&actual_pos) = anchor_map.get(&chapter_idx) {
-                    corrected_positions.insert(key.clone(), actual_pos);
-                }
+            if let Some(&chapter_idx) = orig_to_chapter.get(&orig_pos)
+                && let Some(&actual_pos) = anchor_map.get(&chapter_idx)
+            {
+                corrected_positions.insert(key.clone(), actual_pos);
             }
         }
 
@@ -1369,40 +1369,10 @@ impl Exporter for MobiExporter {
         // Process images from book assets
         builder.process_images(book)?;
 
-        // Get HTML content from book and track chapter positions
-        let (html_content, chapter_positions) = self.collect_html_content(book)?;
-        builder.chapter_positions = chapter_positions.clone();
+        // === PHASE 1: Collect HTML with sentinel anchors ===
+        let (html_content, sentinel_positions) = self.collect_html_content(book)?;
 
-        // Build HTML TOC and prepend to content (pure MOBI 6 navigation)
-        let toc = builder.toc.clone();
-        let html_content = if toc.is_empty() {
-            html_content
-        } else {
-            let toc_html = self.build_html_toc(&toc, &chapter_positions);
-            let toc_len = toc_html.len() as u32;
-
-            // Shift all chapter positions by TOC length
-            let mut shifted_positions = HashMap::new();
-            for (key, &pos) in &chapter_positions {
-                shifted_positions.insert(key.clone(), pos + toc_len);
-            }
-            builder.chapter_positions = shifted_positions;
-
-            // Update start reading offset to skip TOC
-            builder.start_reading_offset = toc_len;
-
-            // Prepend TOC to body content
-            let mut full_html = toc_html;
-            full_html.push_str(&html_content);
-            full_html
-        };
-
-        // Set start reading position if not already set by TOC
-        if builder.start_reading_offset == 0
-            && let Some(first_pos) = chapter_positions.values().min()
-        {
-            builder.start_reading_offset = *first_pos;
-        }
+        // === PHASE 2: All HTML transformations (these change string length) ===
 
         // Update image references in HTML to use MOBI record indices
         let html_content = self.update_image_references(&html_content, &builder);
@@ -1411,9 +1381,40 @@ impl Exporter for MobiExporter {
         let html_content = self.strip_cover_from_body(&html_content, &builder);
 
         // Resolve internal links to MOBI filepos references
-        let html_content = self.resolve_internal_links(&html_content, &builder.chapter_positions);
+        let html_content = self.resolve_internal_links(&html_content, &sentinel_positions);
 
-        // Flatten TOC into binary NCX entries (for INDX/CNCX records + TBS)
+        // === PHASE 3: Fix anchor positions (string is now stable) ===
+
+        let (html_content, corrected_positions) =
+            self.fixup_anchor_positions(&html_content, &sentinel_positions);
+
+        // === PHASE 4: Build TOC with correct positions and prepend ===
+
+        let (html_content, final_positions) = if builder.toc.is_empty() {
+            (html_content, corrected_positions)
+        } else {
+            let toc_html = self.build_html_toc(&builder.toc, &corrected_positions);
+            let toc_len = toc_html.len() as u32;
+
+            // Shift all positions by TOC length
+            let mut shifted_positions = HashMap::new();
+            for (key, &pos) in &corrected_positions {
+                shifted_positions.insert(key.clone(), pos + toc_len);
+            }
+
+            // Start reading offset skips the TOC page
+            builder.start_reading_offset = toc_len;
+
+            // Prepend TOC to body content
+            let mut full_html = toc_html;
+            full_html.push_str(&html_content);
+            (full_html, shifted_positions)
+        };
+
+        builder.chapter_positions = final_positions;
+
+        // === PHASE 5: Build NCX + TBS with final positions ===
+
         if !builder.toc.is_empty() {
             builder.ncx_entries = flatten_toc_for_mobi(
                 &builder.toc,
