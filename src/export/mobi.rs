@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{self, Seek, Write};
 use std::path::Path;
 
-use crate::mobi::index::{NcxBuildEntry, build_ncx_indx};
+use crate::mobi::index::{FlatNcxEntry, build_ncx_flat};
 use crate::model::{AnchorTarget, Book, Metadata, NodeId, TocEntry};
 
 use super::Exporter;
@@ -65,28 +65,18 @@ fn find_element_position(html: &str, element_id: &str) -> Option<u32> {
     html.find(&pattern).map(|pos| pos as u32)
 }
 
-/// Flatten hierarchical TOC into a linear list of NcxBuildEntry for MOBI 6.
+/// Flatten hierarchical TOC into a flat sorted list for MOBI 6 books.
 ///
-/// Walks TocEntry tree recursively, resolves byte positions in the HTML,
-/// calculates section lengths, and sets parent/child indices for the binary NCX.
+/// MOBI 6 uses Calibre's flat_book NCX format: entries sorted by byte offset,
+/// no parent/child hierarchy, depth always 0. Duplicates at the same position
+/// are removed (first entry wins).
 fn flatten_toc_for_mobi(
     entries: &[TocEntry],
     html_content: &str,
     chapter_positions: &HashMap<String, u32>,
     node_element_ids: &NodeElementIds,
     text_length: u32,
-) -> Vec<NcxBuildEntry> {
-    struct TempEntry {
-        pos: u32,
-        length: u32,
-        label: String,
-        depth: u32,
-        parent: i32,
-        children: Vec<usize>,
-    }
-
-    let mut result: Vec<TempEntry> = Vec::new();
-
+) -> Vec<FlatNcxEntry> {
     fn resolve_position(
         entry: &TocEntry,
         html_content: &str,
@@ -96,14 +86,12 @@ fn flatten_toc_for_mobi(
         if let Some(ref target) = entry.target {
             match target {
                 AnchorTarget::Internal(node_id) => {
-                    // Try to find the exact element position by ID
                     let key = (node_id.chapter.0, node_id.node.0);
                     if let Some(elem_id) = node_element_ids.get(&key)
                         && let Some(pos) = find_element_position(html_content, elem_id)
                     {
                         return pos;
                     }
-                    // Fall back to chapter start position
                     let chapter_key = format!("ChapterId({})", node_id.chapter.0);
                     if let Some(&pos) = chapter_positions.get(&chapter_key) {
                         return pos;
@@ -119,7 +107,6 @@ fn flatten_toc_for_mobi(
             }
         }
 
-        // Fallback: try href fragment
         let fragment = if let Some(hash_pos) = entry.href.find('#') {
             &entry.href[hash_pos + 1..]
         } else {
@@ -144,36 +131,18 @@ fn flatten_toc_for_mobi(
         0
     }
 
-    fn flatten_recursive(
+    fn collect_entries(
         entries: &[TocEntry],
-        depth: u32,
-        parent_idx: i32,
         html_content: &str,
         chapter_positions: &HashMap<String, u32>,
         node_element_ids: &NodeElementIds,
-        result: &mut Vec<TempEntry>,
+        result: &mut Vec<(u32, String)>,
     ) {
         for entry in entries {
-            let current_idx = result.len();
             let pos = resolve_position(entry, html_content, chapter_positions, node_element_ids);
-
-            result.push(TempEntry {
-                pos,
-                length: 0,
-                label: entry.title.clone(),
-                depth,
-                parent: parent_idx,
-                children: Vec::new(),
-            });
-
-            if parent_idx >= 0 {
-                result[parent_idx as usize].children.push(current_idx);
-            }
-
-            flatten_recursive(
+            result.push((pos, entry.title.clone()));
+            collect_entries(
                 &entry.children,
-                depth + 1,
-                current_idx as i32,
                 html_content,
                 chapter_positions,
                 node_element_ids,
@@ -182,61 +151,27 @@ fn flatten_toc_for_mobi(
         }
     }
 
-    flatten_recursive(entries, 0, -1, html_content, chapter_positions, node_element_ids, &mut result);
+    let mut flat: Vec<(u32, String)> = Vec::new();
+    collect_entries(
+        entries,
+        html_content,
+        chapter_positions,
+        node_element_ids,
+        &mut flat,
+    );
 
-    // Sort by position, then calculate lengths
-    let mut indexed: Vec<(usize, u32)> =
-        result.iter().enumerate().map(|(i, e)| (i, e.pos)).collect();
-    indexed.sort_by_key(|&(_, pos)| pos);
+    flat.sort_by_key(|&(pos, _)| pos);
+    flat.dedup_by_key(|(pos, _)| *pos);
 
-    let sorted_positions: Vec<u32> = indexed.iter().map(|&(_, pos)| pos).collect();
-    for (rank, &(orig_idx, pos)) in indexed.iter().enumerate() {
-        let next_pos = sorted_positions
-            .get(rank + 1)
-            .copied()
-            .unwrap_or(text_length);
-        result[orig_idx].length = next_pos.saturating_sub(pos);
-    }
-
-    // Remove entries with zero length (duplicates at same position)
-    let mut keep = vec![true; result.len()];
-    for i in 1..indexed.len() {
-        if indexed[i].1 == indexed[i - 1].1 {
-            keep[indexed[i].0] = false;
-        }
-    }
-
-    let mut old_to_new: Vec<i32> = vec![-1; result.len()];
-    for (i, should_keep) in keep.iter().enumerate() {
-        if *should_keep {
-            old_to_new[i] = old_to_new.len() as i32;
-        }
-    }
-
-    result
-        .into_iter()
+    flat.iter()
         .enumerate()
-        .filter(|(i, _)| keep[*i])
-        .map(|(_, e)| NcxBuildEntry {
-            pos: e.pos,
-            length: e.length,
-            label: e.label,
-            depth: e.depth,
-            parent: if e.parent >= 0 {
-                old_to_new.get(e.parent as usize).copied().unwrap_or(-1)
-            } else {
-                -1
-            },
-            first_child: e
-                .children
-                .first()
-                .and_then(|&c| old_to_new.get(c).copied())
-                .unwrap_or(-1),
-            last_child: e
-                .children
-                .last()
-                .and_then(|&c| old_to_new.get(c).copied())
-                .unwrap_or(-1),
+        .map(|(i, (pos, label))| {
+            let next_pos = flat.get(i + 1).map(|(p, _)| *p).unwrap_or(text_length);
+            FlatNcxEntry {
+                pos: *pos,
+                length: next_pos.saturating_sub(*pos),
+                label: label.clone(),
+            }
         })
         .collect()
 }
@@ -258,33 +193,56 @@ fn bvwi(mut val: u32) -> Vec<u8> {
     result
 }
 
-/// Build TBS (Trailing Byte Sequence) for a text record.
+/// Build TBS (Trailing Byte Sequence) for a MOBI 6 text record.
 ///
-/// TBS tells the Kindle reader which TOC entries span this record,
-/// enabling "current chapter" display. The format is:
-/// - Backward-encoded size prefix
-/// - For each spanning entry: backward-encoded (offset, length) pairs
-fn build_tbs(record_start: u32, record_end: u32, toc_entries: &[NcxBuildEntry]) -> Vec<u8> {
-    // Find entries that overlap with this record
-    let spanning: Vec<(u32, u32)> = toc_entries
-        .iter()
-        .filter(|e| e.pos < record_end && (e.pos + e.length) > record_start)
-        .map(|e| {
-            let overlap_start = e.pos.max(record_start) - record_start;
-            let overlap_end = (e.pos + e.length).min(record_end) - record_start;
-            (overlap_start, overlap_end - overlap_start)
-        })
-        .collect();
-
-    if spanning.is_empty() {
+/// Follows Calibre's encoding for book TBS. The format is:
+/// - Backward-encoded total size prefix
+/// - Forward-encoded: entry index (VWI), then flags byte
+///
+/// For books (flat_book), TBS tracks which NCX entries overlap the record.
+/// The encoding finds the last spanning entry index and emits it with flags.
+fn build_tbs(record_start: u32, record_end: u32, toc_entries: &[FlatNcxEntry]) -> Vec<u8> {
+    if toc_entries.is_empty() {
         return Vec::new();
     }
 
-    let mut data = Vec::new();
-    for (offset, length) in &spanning {
-        data.extend(bvwi(*offset));
-        data.extend(bvwi(*length));
+    // Find the last entry whose range covers this record (Calibre's "spanner" logic)
+    let mut spanner_idx: Option<usize> = None;
+    for (i, entry) in toc_entries.iter().enumerate() {
+        let entry_end = entry.pos + entry.length;
+        if entry.pos < record_end && entry_end > record_start {
+            spanner_idx = Some(i);
+        }
     }
+
+    let Some(idx) = spanner_idx else {
+        return Vec::new();
+    };
+
+    // Calibre flat_book TBS encoding:
+    // 1. Entry index as VWI (forward-encoded)
+    // 2. Flags byte: 0b010 (more trailing = false) | 0b001 (count present = false)
+    //    When both flags are 0, Calibre writes a single 0x00 byte
+    let mut data = Vec::new();
+
+    // Entry index (forward-encoded VWI, high bit on last byte)
+    let mut v = idx as u32;
+    let mut idx_bytes = Vec::new();
+    loop {
+        let mut byte = (v & 0x7F) as u8;
+        v >>= 7;
+        if v > 0 {
+            byte |= 0x80; // continuation bit
+        }
+        idx_bytes.push(byte);
+        if v == 0 {
+            break;
+        }
+    }
+    data.extend_from_slice(&idx_bytes);
+
+    // Flags byte
+    data.push(0x00);
 
     // Backward-encoded size prefix
     let mut size_bytes = bvwi(data.len() as u32);
@@ -513,7 +471,7 @@ impl MobiExporter {
                 let pos = resolve_toc_position(entry, chapter_positions).unwrap_or(0);
                 let indent = "&nbsp;".repeat(depth * 4);
                 html.push_str(&format!(
-                    "{}<a filepos=\"{}\">{}</a><br/>\n",
+                    "{}<a filepos=\"{:010}\">{}</a><br/>\n",
                     indent, pos, entry.title
                 ));
                 if !entry.children.is_empty() {
@@ -631,8 +589,7 @@ impl MobiExporter {
                 if let Some(elem_id) = chapter.semantics.id(nid)
                     && !elem_id.is_empty()
                 {
-                    node_element_ids
-                        .insert((entry.id.0, node_idx as u32), elem_id.to_string());
+                    node_element_ids.insert((entry.id.0, node_idx as u32), elem_id.to_string());
                 }
             }
 
@@ -795,7 +752,7 @@ struct MobiBuilder {
     /// Chapter ID to byte position mapping (for TOC resolution)
     chapter_positions: HashMap<String, u32>,
     /// Flattened NCX entries for binary TOC index and TBS generation
-    ncx_entries: Vec<NcxBuildEntry>,
+    ncx_entries: Vec<FlatNcxEntry>,
     /// Collected warnings
     warnings: Vec<String>,
     /// Configuration
@@ -1117,7 +1074,12 @@ impl MobiBuilder {
     /// Pure MOBI 6 uses a 232-byte header with no KF8 extensions.
     /// NCX index goes into extra record index [2] (offset 48).
     /// TBS is signalled via extra_data_flags at offset 240-243.
-    fn build_mobi_header(&self, text_length: u32, index_record_count: usize) -> Vec<u8> {
+    fn build_mobi_header(
+        &self,
+        text_length: u32,
+        index_record_count: usize,
+        has_tbs: bool,
+    ) -> Vec<u8> {
         let mut header = Vec::new();
 
         // Offset 0: Compression type (2 bytes) - PalmDoc = 2
@@ -1244,8 +1206,14 @@ impl MobiBuilder {
         // Offset 216-223: Unknown (8 bytes of 0)
         header.extend_from_slice(&0u64.to_be_bytes());
 
-        // Offset 224-231: Unknown (8 bytes of 0)
-        header.extend_from_slice(&0u64.to_be_bytes());
+        // Offset 224-227: Unknown (4 bytes of 0)
+        header.extend_from_slice(&0u32.to_be_bytes());
+
+        // Offset 228-231: extra_data_flags
+        // Bit 0 (0x01): multibyte overlap bytes present
+        // Bit 1 (0x02): TBS indexing data present
+        let extra_data_flags: u32 = if has_tbs { 0x02 } else { 0x00 };
+        header.extend_from_slice(&extra_data_flags.to_be_bytes());
 
         // Total: 232 bytes
         assert_eq!(header.len(), 232, "MOBI 6 header must be exactly 232 bytes");
@@ -1253,8 +1221,8 @@ impl MobiBuilder {
     }
 
     /// Build complete Record 0 with MOBI header, EXTH, and title
-    fn build_record0(&self, text_length: u32, index_record_count: usize) -> Vec<u8> {
-        let mut record0 = self.build_mobi_header(text_length, index_record_count);
+    fn build_record0(&self, text_length: u32, index_record_count: usize, has_tbs: bool) -> Vec<u8> {
+        let mut record0 = self.build_mobi_header(text_length, index_record_count, has_tbs);
 
         // Add EXTH metadata header (after MOBI header at offset 232)
         let exth = self.build_exth_header();
@@ -1284,7 +1252,7 @@ impl MobiBuilder {
             "MOBI TOC: {} entries with positions",
             self.ncx_entries.len()
         );
-        Some(build_ncx_indx(&self.ncx_entries))
+        Some(build_ncx_flat(&self.ncx_entries))
     }
 
     /// Build EOF marker
@@ -1309,7 +1277,8 @@ impl MobiBuilder {
             1 + self.text_records.len() + index_record_count + self.image_records.len() + 1;
 
         let pdb_header = self.build_palmdb_header(num_records as u16);
-        let record0 = self.build_record0(self.text_length, index_record_count);
+        let has_tbs = !self.ncx_entries.is_empty();
+        let record0 = self.build_record0(self.text_length, index_record_count, has_tbs);
 
         // Calculate record offsets
         let mut offsets = Vec::new();
@@ -1425,14 +1394,20 @@ impl Exporter for MobiExporter {
         let (html_content, final_positions) = if builder.toc.is_empty() {
             (html_content, corrected_positions)
         } else {
-            let toc_html = self.build_html_toc(&builder.toc, &corrected_positions);
-            let toc_len = toc_html.len() as u32;
+            // Pass 1: Build TOC with unshifted positions to measure its length.
+            // Uses 10-digit zero-padded filepos so length is deterministic.
+            let toc_html_draft = self.build_html_toc(&builder.toc, &corrected_positions);
+            let toc_len = toc_html_draft.len() as u32;
 
             // Shift all positions by TOC length
             let mut shifted_positions = HashMap::new();
             for (key, &pos) in &corrected_positions {
                 shifted_positions.insert(key.clone(), pos + toc_len);
             }
+
+            // Pass 2: Rebuild TOC with correctly shifted positions.
+            // Fixed-width filepos guarantees same TOC length.
+            let toc_html = self.build_html_toc(&builder.toc, &shifted_positions);
 
             // Start reading offset skips the TOC page
             builder.start_reading_offset = toc_len;

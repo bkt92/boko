@@ -1157,6 +1157,101 @@ pub fn build_ncx_indx(entries: &[NcxBuildEntry]) -> (Vec<Vec<u8>>, Vec<u8>) {
     (builder.build(), cncx)
 }
 
+/// Flat NCX entry for MOBI 6 books (Calibre's flat_book format).
+///
+/// MOBI 6 books use a simplified NCX with no parent/child hierarchy.
+/// All entries are sorted by byte offset with depth always 0.
+/// Only tags 1-4 (offset, length, label, depth) are used, with 1 control byte.
+#[derive(Debug, Clone)]
+pub struct FlatNcxEntry {
+    /// Position in text (byte offset)
+    pub pos: u32,
+    /// Length of the section
+    pub length: u32,
+    /// Label text (for CNCX)
+    pub label: String,
+}
+
+/// Flat NCX TAGX definitions for MOBI 6 books (Calibre's flat_book format).
+const FLAT_NCX_TAG_OFFSET: TagDef = TagDef {
+    tag: 1,
+    values_per_entry: 1,
+    bitmask: 0x01,
+    eof: 0,
+};
+const FLAT_NCX_TAG_LENGTH: TagDef = TagDef {
+    tag: 2,
+    values_per_entry: 1,
+    bitmask: 0x02,
+    eof: 0,
+};
+const FLAT_NCX_TAG_LABEL: TagDef = TagDef {
+    tag: 3,
+    values_per_entry: 1,
+    bitmask: 0x04,
+    eof: 0,
+};
+const FLAT_NCX_TAG_DEPTH: TagDef = TagDef {
+    tag: 4,
+    values_per_entry: 1,
+    bitmask: 0x08,
+    eof: 0,
+};
+const FLAT_NCX_TAG_EOF: TagDef = TagDef {
+    tag: 0,
+    values_per_entry: 0,
+    bitmask: 0x00,
+    eof: 1,
+};
+
+/// Build flat NCX index for MOBI 6 books.
+///
+/// Uses Calibre's flat_book TAGX: tags 1-4 only, 1 control byte,
+/// no parent/child hierarchy. Entries sorted by position.
+pub fn build_ncx_flat(entries: &[FlatNcxEntry]) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let tagx = vec![
+        FLAT_NCX_TAG_OFFSET,
+        FLAT_NCX_TAG_LENGTH,
+        FLAT_NCX_TAG_LABEL,
+        FLAT_NCX_TAG_DEPTH,
+        FLAT_NCX_TAG_EOF,
+    ];
+    let mut builder = IndxBuilder::new(tagx, 1); // 1 control byte
+
+    // Build CNCX with labels
+    let labels: Vec<String> = entries.iter().map(|e| e.label.clone()).collect();
+    let label_offsets = calculate_cncx_offsets(&labels);
+    let cncx = build_cncx(&labels);
+
+    if !entries.is_empty() {
+        builder.set_cncx_count(1);
+    }
+
+    for (i, entry) in entries.iter().enumerate() {
+        // Control byte: all 4 tags present → 0x01 | 0x02 | 0x04 | 0x08 = 0x0F
+        let mut tag_data = vec![0x0F];
+
+        // Offset (tag 1)
+        tag_data.extend(encint(entry.pos));
+
+        // Length (tag 2)
+        tag_data.extend(encint(entry.length));
+
+        // Label (tag 3) - CNCX offset
+        let label_offset = label_offsets.get(i).copied().unwrap_or(0);
+        tag_data.extend(encint(label_offset));
+
+        // Depth (tag 4) - always 0 for books
+        tag_data.extend(encint(0));
+
+        // Entry name: hex-encoded index (Calibre convention)
+        let name = format!("{:X}", i);
+        builder.add_entry(name, tag_data);
+    }
+
+    (builder.build(), cncx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1399,5 +1494,124 @@ mod tests {
         assert_eq!(skel_files[2].file_number, 2);
         assert_eq!(skel_files[2].start_pos, 3500);
         assert_eq!(skel_files[2].length, 500);
+    }
+
+    #[test]
+    fn test_flat_ncx_roundtrip() {
+        let entries = vec![
+            FlatNcxEntry {
+                pos: 0,
+                length: 1000,
+                label: "Chapter 1".to_string(),
+            },
+            FlatNcxEntry {
+                pos: 1000,
+                length: 2000,
+                label: "Chapter 2".to_string(),
+            },
+            FlatNcxEntry {
+                pos: 3000,
+                length: 500,
+                label: "Chapter 3".to_string(),
+            },
+        ];
+
+        let (ncx_records, ncx_cncx) = build_ncx_flat(&entries);
+
+        // Should have 2 records: header + data
+        assert_eq!(ncx_records.len(), 2, "Should have header + data record");
+
+        // Parse the header
+        let header = IndxHeader::parse(&ncx_records[0]).expect("Failed to parse header");
+        let tagx_start = header.tagx_offset as usize;
+        let (control_byte_count, tagx) =
+            parse_tagx(&ncx_records[0][tagx_start..]).expect("Failed to parse TAGX");
+
+        // Flat book uses 1 control byte
+        assert_eq!(control_byte_count, 1, "Flat book should use 1 control byte");
+
+        // Parse CNCX
+        let cncx = Cncx::parse(&[ncx_cncx], "utf-8");
+
+        // Parse the data record
+        let data_record = &ncx_records[1];
+        let data_header = IndxHeader::parse(data_record).expect("Failed to parse data header");
+
+        let idxt_pos = data_header.idxt_start as usize;
+        assert_eq!(&data_record[idxt_pos..idxt_pos + 4], b"IDXT");
+
+        // Read entry positions
+        let mut positions: Vec<usize> = Vec::new();
+        for j in 0..data_header.entry_count as usize {
+            let off = idxt_pos + 4 + j * 2;
+            let pos = u16::from_be_bytes([data_record[off], data_record[off + 1]]) as usize;
+            positions.push(pos);
+        }
+        positions.push(idxt_pos);
+
+        // Parse entries
+        let mut index_entries = Vec::new();
+        for j in 0..positions.len().saturating_sub(1) {
+            let start = positions[j];
+            let end = positions[j + 1];
+            let entry_data = &data_record[start..end];
+            let (name, consumed) = decode_string(entry_data, "utf-8");
+            let tag_data = &entry_data[consumed..];
+            let tags = get_tag_map(control_byte_count, &tagx, tag_data);
+            index_entries.push(IndexEntry { name, tags });
+        }
+
+        assert_eq!(index_entries.len(), 3, "Should have 3 entries");
+
+        // Verify entries have only tags 1-4 (no 21, 22, 23)
+        for (i, entry) in index_entries.iter().enumerate() {
+            let pos = entry
+                .tags
+                .get(&1)
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or(0);
+            let length = entry
+                .tags
+                .get(&2)
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or(0);
+            let label_off = entry
+                .tags
+                .get(&3)
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or(0);
+            let depth = entry
+                .tags
+                .get(&4)
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or(999);
+
+            assert_eq!(pos, entries[i].pos, "Entry {} pos mismatch", i);
+            assert_eq!(length, entries[i].length, "Entry {} length mismatch", i);
+            assert_eq!(depth, 0, "Entry {} depth should be 0", i);
+
+            let label = cncx.get(label_off).cloned().unwrap_or_default();
+            assert_eq!(label, entries[i].label, "Entry {} label mismatch", i);
+
+            assert!(
+                entry.tags.get(&21).is_none(),
+                "Entry {} should not have parent tag",
+                i
+            );
+            assert!(
+                entry.tags.get(&22).is_none(),
+                "Entry {} should not have first_child tag",
+                i
+            );
+            assert!(
+                entry.tags.get(&23).is_none(),
+                "Entry {} should not have last_child tag",
+                i
+            );
+        }
     }
 }
