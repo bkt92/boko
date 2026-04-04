@@ -358,7 +358,8 @@ fn print_human(book: &mut Book, path: &str) -> Result<(), String> {
     if let Some(ref desc) = meta.description {
         let desc = desc.trim();
         if desc.len() > 200 {
-            let safe_end = desc.char_indices()
+            let safe_end = desc
+                .char_indices()
                 .map(|(i, _)| i)
                 .take_while(|&i| i <= 200)
                 .last()

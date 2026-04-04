@@ -112,14 +112,20 @@ mod tests {
     fn test_preserves_filepos_anchors() {
         let html = r#"<p>Text</p><a id="filepos12345" /><p>More</p>"#;
         let result = strip_mobi_artifacts(html);
-        assert!(result.contains(r#"<a id="filepos12345" />"#), "filepos anchors should be preserved for TOC");
+        assert!(
+            result.contains(r#"<a id="filepos12345" />"#),
+            "filepos anchors should be preserved for TOC"
+        );
     }
 
     #[test]
     fn test_preserves_filepos_anchors_with_close_tag() {
         let html = r#"<p>Text</p><a id="filepos0000100"></a><p>More</p>"#;
         let result = strip_mobi_artifacts(html);
-        assert!(result.contains(r#"id="filepos0000100""#), "filepos anchors should be preserved");
+        assert!(
+            result.contains(r#"id="filepos0000100""#),
+            "filepos anchors should be preserved"
+        );
     }
 
     #[test]
@@ -135,8 +141,14 @@ mod tests {
         let html = r#"<a id="filepos0" /><mbp:pagebreak/><p>Hello</p><mbp:pagebreak/><a id="filepos500" /><p>World</p>"#;
         let result = strip_mobi_artifacts(html);
         assert!(!result.contains("mbp:"), "mbp tags should be removed");
-        assert!(result.contains(r#"id="filepos0""#), "filepos anchors should be preserved");
-        assert!(result.contains(r#"id="filepos500""#), "filepos anchors should be preserved");
+        assert!(
+            result.contains(r#"id="filepos0""#),
+            "filepos anchors should be preserved"
+        );
+        assert!(
+            result.contains(r#"id="filepos500""#),
+            "filepos anchors should be preserved"
+        );
     }
 
     #[test]
@@ -182,7 +194,10 @@ mod tests {
     fn test_combined_mobi_artifacts() {
         let html = r#"<a id="filepos100" /><mbp:pagebreak/><p aid="0050">Chapter</p><img src="cover.jpg" data-AmznPageBreak="true"/>"#;
         let result = strip_mobi_artifacts(html);
-        assert!(result.contains("filepos"), "filepos anchors preserved for TOC");
+        assert!(
+            result.contains("filepos"),
+            "filepos anchors preserved for TOC"
+        );
         assert!(!result.contains("mbp:"), "mbp tags removed");
         assert!(!result.contains("aid="), "aid attributes removed");
         assert!(!result.contains("data-Amzn"), "data-Amzn removed");

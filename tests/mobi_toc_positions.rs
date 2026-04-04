@@ -5,7 +5,10 @@ use std::io::Cursor;
 fn mobi_export_produces_valid_toc() {
     let mut book = Book::open("tests/fixtures/test_book.epub").unwrap();
     let toc_before = book.toc().to_vec();
-    assert!(!toc_before.is_empty(), "Source EPUB should have TOC entries");
+    assert!(
+        !toc_before.is_empty(),
+        "Source EPUB should have TOC entries"
+    );
 
     let mobi_path = "/tmp/test_mobi_toc_positions.mobi";
     {
@@ -71,10 +74,7 @@ fn mobi_export_preserves_all_chapters() {
     // Verify the MOBI file was written successfully and can be opened
     let mobi = Book::open(mobi_path).unwrap();
     let metadata = mobi.metadata();
-    assert!(
-        !metadata.title.is_empty(),
-        "MOBI should have a title"
-    );
+    assert!(!metadata.title.is_empty(), "MOBI should have a title");
 
     // Verify spine is preserved
     let spine_after = mobi.spine().to_vec();

@@ -3,6 +3,7 @@
     "superpowers@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
     "github@claude-plugins-official": true,
-    "rust-skills@rust-skills": true
+    "rust-skills@rust-skills": true,
+    "context7@claude-plugins-official": true
   }
 }

@@ -9,7 +9,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let toc1 = ep1.toc().to_vec();
     println!("EPUB TOC: {} entries", toc1.len());
     for (i, e) in toc1.iter().enumerate() {
-        println!("  [{}] {} ({} children) -> {}", i, e.title, e.children.len(), e.href);
+        println!(
+            "  [{}] {} ({} children) -> {}",
+            i,
+            e.title,
+            e.children.len(),
+            e.href
+        );
     }
 
     // EPUB → MOBI
@@ -25,7 +31,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let toc2 = mobi.toc().to_vec();
     println!("MOBI TOC: {} entries", toc2.len());
     for (i, e) in toc2.iter().enumerate() {
-        println!("  [{}] {} ({} children) -> {}", i, e.title, e.children.len(), e.href);
+        println!(
+            "  [{}] {} ({} children) -> {}",
+            i,
+            e.title,
+            e.children.len(),
+            e.href
+        );
     }
 
     // MOBI → EPUB
@@ -41,7 +53,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let toc3 = epub2.toc().to_vec();
     println!("Roundtrip EPUB TOC: {} entries", toc3.len());
     for (i, e) in toc3.iter().enumerate() {
-        println!("  [{}] {} ({} children) -> {}", i, e.title, e.children.len(), e.href);
+        println!(
+            "  [{}] {} ({} children) -> {}",
+            i,
+            e.title,
+            e.children.len(),
+            e.href
+        );
     }
 
     // Comparison

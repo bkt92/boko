@@ -11,8 +11,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn print_toc(entries: &[boko::TocEntry], depth: usize) {
         for (i, entry) in entries.iter().enumerate() {
             let indent = "  ".repeat(depth);
-            println!("{}[{}] title='{}' href='{}' target={:?}",
-                indent, i, entry.title, entry.href, entry.target);
+            println!(
+                "{}[{}] title='{}' href='{}' target={:?}",
+                indent, i, entry.title, entry.href, entry.target
+            );
             print_toc(&entry.children, depth + 1);
         }
     }
@@ -25,7 +27,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut f = std::fs::File::create(mobi_path)?;
         book_epub.export(Format::Mobi, &mut f)?;
     }
-    println!("MOBI written: {} bytes", std::fs::metadata(&mobi_path)?.len());
+    println!(
+        "MOBI written: {} bytes",
+        std::fs::metadata(&mobi_path)?.len()
+    );
 
     // Step 3: Read MOBI TOC
     println!("\n=== Step 3: MOBI TOC ===");
@@ -37,8 +42,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 4: Resolve MOBI links
     println!("\n=== Step 4: MOBI resolved links ===");
     let resolved_mobi = book_mobi.resolve_links()?;
-    println!("MOBI links resolved, {} broken",
-        resolved_mobi.broken_links().len());
+    println!(
+        "MOBI links resolved, {} broken",
+        resolved_mobi.broken_links().len()
+    );
 
     // Step 5: Export MOBI to EPUB
     println!("\n=== Step 5: MOBI → EPUB ===");
@@ -47,7 +54,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut f = std::fs::File::create(epub_path2)?;
         book_mobi.export(Format::Epub, &mut f)?;
     }
-    println!("EPUB written: {} bytes", std::fs::metadata(&epub_path2)?.len());
+    println!(
+        "EPUB written: {} bytes",
+        std::fs::metadata(&epub_path2)?.len()
+    );
 
     // Step 6: Read roundtrip EPUB TOC
     println!("\n=== Step 6: Roundtrip EPUB TOC ===");
